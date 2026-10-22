@@ -151,6 +151,11 @@
 //!   it needs. See the benchmarks in the repository.
 
 #![cfg_attr(not(any(loom, feature = "std")), no_std)]
+// `docsrs` is set by docs.rs (via the manifest metadata below) and by the CI
+// job that renders the docs the way docs.rs will. It turns on `doc_cfg` so the
+// `std`-gated items below are labelled with the feature they need instead of
+// silently vanishing from the rendered docs.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
@@ -180,6 +185,7 @@ pub use crate::guards::{ReadGuard, WriteGuard};
 pub use crate::inner::Inner;
 pub use crate::observ::{MAX_NOTIFICATION_ROUNDS, Observable, ObserverId};
 #[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use crate::wait::{retry, wait};
 
 /// Names the [`cell!`](crate::cell) expansion refers to, re-exported so that the

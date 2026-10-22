@@ -124,3 +124,30 @@ jobs:
       - run: cargo install cargo-fuzz --locked
       - run: cargo fuzz run borrow_ops -- -max_total_time=120
       - run: cargo fuzz run observers -- -max_total_time=120
+
+  # `cargo package` is the closest local check to `cargo publish`: it builds the
+  # exact file set a user would download, in a fresh directory, with the
+  # `Cargo.toml` cargo rewrites. It catches a missing manifest field, a stray
+  # path dependency, or a file that only exists on the author's disk - none of
+  # which `cargo build` notices.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo package
+
+  # Render the docs the way docs.rs will: nightly, every feature on, and
+  # `--cfg docsrs`. Without this, a `doc_cfg` attribute that only compiles
+  # under that cfg (or a broken intra-doc link inside a `std`-gated item)
+  # would not surface until the crate was published.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
