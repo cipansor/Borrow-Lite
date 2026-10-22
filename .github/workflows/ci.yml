@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # Each action is pinned to the commit its tag resolves to: some
+      # organisations reject unpinned actions at job setup.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-targets
+      - run: cargo test --doc
+      # The `std` feature is additive and off by default, so nothing above
+      # would compile it. It carries the `retry`/`wait` helper, so it needs its
+      # own pass rather than riding on the default build.
+      - run: cargo clippy --features std --all-targets -- -D warnings
+      - run: cargo test --features std --all-targets
+      - run: cargo test --features std --doc
+      # Broken intra-doc links are invisible otherwise, which is how three of
+      # them survived until the docs were checked by hand.
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # The benches carry assertions (no lost update, no refused read with no
+      # writer, no dropped observer on panic). `--test` runs each once with
+      # them enabled, so a broken benchmark fails CI instead of quietly
+      # printing numbers nobody should trust.
+      - run: cargo bench -- --test
+      # The examples are compiled by `--all-targets` but never *run* by it, so a
+      # panic in one would go unnoticed. `demo` walks the whole API end to end
+      # (including both catch_unwind paths), and `sizes` exercises guards.
+      - run: cargo run --example demo
+      - run: cargo run --release --example sizes
+
+  # `no_std` is a claim in the crate docs, not a comment: this job builds the
+  # library for a bare-metal target that has no std at all, so the claim cannot
+  # rot. It would catch a stray `std::` path or a dependency creeping in.
+  no-std:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: thumbv7em-none-eabi
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo build --target thumbv7em-none-eabi
+
+  # The declared MSRV is a promise to users, so it is tested on the version it
+  # names rather than assumed from whatever stable happens to be current. It is
+  # 1.85 because that is the first release with edition 2024.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: "1.85"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo build --all-targets
+      - run: cargo build --features std --all-targets
+
+  # Miri under many seeds: each seed explores a different thread interleaving,
+  # so this covers far more schedules than the single run in the job above would.
+  # Nightly only, and slower, which is why it is a separate job.
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
+        with:
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo miri setup
+      - run: cargo miri test
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-preemption-rate=0.3
+      # Different seeds, different interleavings. This is the closest thing to
+      # exhaustive schedule coverage without a model checker.
+      - run: cargo miri test
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-many-seeds=0..16
+      # The `std` feature adds a retry loop, so it has to be checked for data
+      # races too, not just compiled.
+      - run: cargo miri test --features std
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
+
+  # Loom explores interleavings exhaustively. Its limit is documented in
+  # tests/loom.rs: it treats SeqCst as AcqRel, so the SeqCst total-order
+  # property cannot be checked here and the tests do not pretend otherwise.
+  loom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo test --test loom --release
+        env:
+          RUSTFLAGS: --cfg loom
+          LOOM_MAX_PREEMPTIONS: 3
+
+  # The fuzz target replays operation scripts against a shadow model. A fixed
+  # budget on every push keeps it honest; the crash regression files, if any,
+  # are replayed first.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo fuzz run borrow_ops -- -max_total_time=120
+      - run: cargo fuzz run observers -- -max_total_time=120

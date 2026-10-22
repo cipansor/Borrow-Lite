@@ -1,0 +1,70 @@
+[package]
+name = "lite"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Rc<RefCell<T>> and Arc<RwLock<T>> ergonomics without the pain: one small API, try-first borrowing, and conflicts that tell you who borrowed what and where."
+authors = ["Yayasan Pesantren Cipansor and contributors"]
+license = "Apache-2.0"
+keywords = ["refcell", "rwlock", "interior-mutability", "ergonomics", "rc"]
+categories = ["rust-patterns", "memory-management", "no-std"]
+readme = "README.md"
+
+[features]
+default = []
+# Adds `lite::wait`, an adaptive retry helper that yields. The crate is
+# `no_std` by default, and `thread::yield_now` needs `std`, so the helper is
+# behind this feature. It exists because the benchmarks found that yielding
+# beats both spinning and `parking_lot::RwLock` under contention, yet the
+# obvious loop to write is the spinning one.
+std = []
+
+[dependencies]
+
+# Loom is only pulled in when `RUSTFLAGS=--cfg loom` is set, which only the
+# model-checking test job does. The library itself swaps its atomics for loom's
+# instrumented ones under that cfg, so this has to be a real dependency rather
+# than a dev-dependency - a dev-dependency would not be visible to the library.
+# A normal build never matches the target cfg, so nothing is downloaded.
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+[dev-dependencies]
+# Only the benchmarking harness is needed, so the default `rayon`/`plotters`
+# features are off. `cargo test --all-targets` runs these in test mode, which
+# makes them a smoke test for the crate as well.
+criterion = { version = "0.5.1", default-features = false, features = [
+    "cargo_bench_support",
+] }
+parking_lot = "0.12.5"
+
+[[bench]]
+name = "compare"
+harness = false
+
+[[bench]]
+name = "contention"
+harness = false
+
+[[bench]]
+name = "retry"
+harness = false
+
+[[bench]]
+name = "readonly"
+harness = false
+
+[[bench]]
+name = "observable"
+harness = false
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+# `loom` is a cfg name this crate uses but cargo does not know about, so it has
+# to be declared or every `#[cfg(loom)]` trips `unexpected_cfgs` under
+# `-D warnings`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
