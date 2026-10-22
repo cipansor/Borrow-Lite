@@ -2,8 +2,16 @@
 
 Shared, mutable data in Rust without the parts that usually bite you.
 
-`lite` is a small experiment in ergonomics, not a new borrow checker. It
-gives three types that cover the three shapes people actually write:
+`lite` is a small experiment in ergonomics, not a new borrow checker. It gives
+three types that cover the three shapes people actually write, and it changes
+what happens when a borrow is refused: instead of a bare
+`already borrowed: BorrowMutError`, you get an error that names the file and
+line of the borrow that is in the way.
+
+The value semantics are unchanged. What changes is the failure mode, and how
+easy it is to write code that never hits it.
+
+## The three shapes
 
 | Shape | std | lite |
 |---|---|---|
@@ -11,14 +19,151 @@ gives three types that cover the three shapes people actually write:
 | shared + mutable, one thread | `Rc<RefCell<T>>` | `Local<T>` |
 | shared + mutable, many threads | `Arc<RwLock<T>>` | `Shared<T>` |
 
-The value is the same. What changes is what happens when a borrow is refused,
-and how easy it is to write code that never gets refused in the first place.
+`Inline<T>` is the cheapest: no allocation, no reference count, and `Send` when
+`T` is - the same auto traits as `RefCell<T>`. `Local<T>` and `Shared<T>` add
+sharing on top, at the cost of one allocation each. All three expose the same
+method set, so moving a value between shapes is a type change, not a rewrite.
 
-`Inline<T>` is the cheapest of the three: no allocation, no reference count, and
-`Send` when `T` is - the same auto traits as `RefCell<T>`. `Local<T>` and
-`Shared<T>` add sharing on top, at the cost of one allocation each.
+```rust
+use lite::{Local, Shared, local, shared};
 
-## The four annoyances it removes
+let a: Local<i32> = local(5);
+let b: Local<i32> = local(5);
+assert!(a == b); // compares the values, like Rc<RefCell>
+assert!(a.ptr_eq(&a.clone())); // same cell, like Rc::ptr_eq
+assert!(!a.ptr_eq(&b)); // a separate cell with an equal value
+assert_eq!(Local::from(7).with(|v| *v), 7);
+assert_eq!(Local::<i32>::default().with(|v| *v), 0);
+assert!(local(1) < local(2)); // ordering by value, so `sort()` works
+
+let c: Shared<i32> = shared(1);
+assert!(c == c.clone());
+```
+
+## Old way vs `lite`
+
+The honest way to judge ergonomics is to put the code people already write next
+to the code `lite` asks for, on the same task.
+
+### Side by side: one owner
+
+```rust
+use std::cell::RefCell;
+
+let stats = RefCell::new(vec![1, 2, 3]);
+stats.borrow_mut().push(4);
+assert_eq!(stats.borrow().len(), 4);
+```
+
+```rust
+use lite::inline;
+
+let stats = inline(vec![1, 2, 3]);
+stats.with_mut(|v| v.push(4));
+assert_eq!(stats.with(Vec::len), 4);
+```
+
+Same shape, same line count. The only change is `borrow_mut()`/`borrow()` become
+`with_mut(..)`/`with(..)`, which release the borrow before returning.
+
+### Side by side: shared
+
+```rust
+use std::cell::RefCell;
+use std::rc::Rc;
+
+let stats = Rc::new(RefCell::new(vec![1, 2, 3]));
+let total: i32 = stats.borrow().iter().sum();
+stats.borrow_mut().push(4);
+assert_eq!(total, 6);
+```
+
+```rust
+use lite::local;
+
+let stats = local(vec![1, 2, 3]);
+let total: i32 = stats.with(|v| v.iter().sum());
+stats.with_mut(|v| v.push(4));
+assert_eq!(total, 6);
+```
+
+`Rc::new(RefCell::new(v))` collapses to `local(v)`, and the read collapses from
+a deref-and-method-call into one closure. The difference is small here; it
+compounds in a struct full of fields, where the old way is
+`self.field.borrow_mut()` on every access and the new way is one `cell!` accessor
+(see [Named fields without the closure](#named-fields-without-the-closure)).
+
+### Side by side: when it goes wrong
+
+This is where the two diverge. `std` tells you a borrow exists; `lite` tells you
+which one.
+
+```rust
+use std::cell::RefCell;
+
+let cell = RefCell::new(0);
+let held = cell.borrow();
+let err = cell.try_borrow_mut().unwrap_err();
+// "already borrowed" - which borrow, where, reader or writer? Not said.
+assert_eq!(err.to_string(), "already borrowed");
+# drop(held);
+```
+
+```rust
+use lite::inline;
+
+let cell = inline(0);
+let held = cell.borrow();
+let err = cell.try_borrow_mut().unwrap_err();
+// names the location of the borrow in the way
+assert!(err.to_string().contains("held at"));
+assert_eq!(err.kind(), lite::ConflictKind::Readers);
+# drop(held);
+```
+
+The `std` wording is also a trap: `try_borrow_mut()` on a shared borrow returns
+`BorrowMutError`, whose `Display` is `"already borrowed"`, while `try_borrow()`
+on a write returns `"already mutably borrowed"`. Neither names the offending
+line, so you hunt for it by eye.
+
+### Verbosity, line by line
+
+| Task | old (`std`) | `lite` |
+|---|---|---|
+| one-owner cell | `RefCell<T>` | `Inline<T>` |
+| shared cell, one thread | `Rc<RefCell<T>>` | `Local<T>` |
+| shared cell, many threads | `Arc<RwLock<T>>` | `Shared<T>` |
+| build one | `Rc::new(RefCell::new(v))` | `local(v)` |
+| read, scoped | `*c.borrow()` | `c.with(\|v\| *v)` |
+| write, scoped | `*c.borrow_mut() += 1;` | `c.with_mut(\|v\| *v += 1);` |
+| recover from a conflict | `.try_borrow_mut()` -> `Err(BorrowMutError)`, no location | `.try_borrow_mut()` -> `Err(Conflict)`, located |
+| a guard that cannot leak | manual `drop` or a `let _ = ..` block | `with`/`with_mut`, by construction |
+| wait for a busy cell | `lock()` - blocks, and poisons on panic | retry loop, or the bounded `retry(n, op)` |
+
+Two rows are the whole pitch. A conflict becomes a value you can match on
+instead of a panic or a deadlock, and a borrow you cannot forget to release is
+the default rather than a discipline.
+
+### Where `lite` is *longer* (the honest column)
+
+Ergonomics is a trade, not a free win, and a few places cost more keystrokes:
+
+- **The `with` closure cannot return a reference into the cell.** Copy or clone
+  what you need out, or drop back to a guard (`borrow()`), exactly as with
+  `RefCell`. A `Deref`-based read is shorter but cannot be made safe here.
+- **Writes nest one level deeper.** `*c.borrow_mut() = x` becomes
+  `c.with_mut(|v| *v = x)`. The closure is the price of the borrow being
+  released for you.
+- **`get_mut` returns `Option`.** Like `RefCell::get_mut`, because a second
+  handle means a borrow could exist; you `.unwrap()` it.
+- **`cell!` needs two names**, the handle and the value struct, because a
+  declarative macro cannot hide one behind the other without a proc-macro
+  dependency.
+
+If those costs matter more than the diagnostics, `RefCell` is a fine choice -
+see [When not to use `lite`](#when-not-to-use-lite).
+
+## What changes, in detail
 
 ### 1. Panic messages that name the culprit and the victim
 
@@ -172,25 +317,10 @@ assert_eq!(self_swap.kind(), lite::ConflictKind::Writer); // named, not generic
 
 ### 5. The trait surface you already reach for
 
-`Local<T>` and `Shared<T>` stand in for `Rc<RefCell<T>>` and `Arc<RwLock<T>>`,
-so they carry the everyday traits those do, instead of making you unwrap the
-cell to compare two of them or to build one from a value:
-
-```rust
-use lite::{Local, Shared, local, shared};
-
-let a: Local<i32> = local(5);
-let b: Local<i32> = local(5);
-assert!(a == b); // compares the values, like Rc<RefCell>
-assert!(a.ptr_eq(&a.clone())); // same cell, like Rc::ptr_eq
-assert!(!a.ptr_eq(&b)); // a separate cell with an equal value
-assert_eq!(Local::from(7).with(|v| *v), 7);
-assert_eq!(Local::<i32>::default().with(|v| *v), 0);
-assert!(local(1) < local(2)); // ordering by value, so `sort()` works
-
-let c: Shared<i32> = shared(1);
-assert!(c == c.clone());
-```
+`Local<T>` and `Shared<T>` carry the everyday traits `Rc<RefCell<T>>` and
+`Arc<RwLock<T>>` do - `==`, `Ord`, `Default`, `From`, `ptr_eq` - so you do not
+have to unwrap the cell to compare two of them or build one from a value. The
+example is in [The three shapes](#the-three-shapes).
 
 `==` on two *different* cells borrows both values, so it panics if one is
 borrowed - exactly as `Rc<RefCell<T>>` does. Comparing a cell with *itself*
@@ -298,6 +428,10 @@ the worker thread instead of moving a guard across.
 `Inline<T>` is `Send` when `T` is, like `RefCell<T>`, but `!Sync`: to share a
 cell between threads you need `Shared<T>`, because the single-threaded flags are
 plain `Cell`s.
+
+Retrying with `yield_now` rather than `spin_loop` is not a style choice - it is
+the measured winner. [Cost under contention](#cost-under-contention) and
+[Waiting for a busy cell](#waiting-for-a-busy-cell) have the numbers.
 
 ## Observers without the usual re-entrancy bugs
 
