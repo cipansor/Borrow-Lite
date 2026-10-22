@@ -104,8 +104,8 @@ use std::cell::RefCell;
 let cell = RefCell::new(0);
 let held = cell.borrow();
 let err = cell.try_borrow_mut().unwrap_err();
-// "already borrowed" - which borrow, where, reader or writer? Not said.
-assert_eq!(err.to_string(), "already borrowed");
+// `BorrowMutError` is a unit struct: no location, no kind, no count.
+let _: std::cell::BorrowMutError = err;
 # drop(held);
 ```
 
@@ -115,16 +115,18 @@ use lite::inline;
 let cell = inline(0);
 let held = cell.borrow();
 let err = cell.try_borrow_mut().unwrap_err();
-// names the location of the borrow in the way
+// `Conflict` carries the location of the borrow in the way, its kind and count.
 assert!(err.to_string().contains("held at"));
 assert_eq!(err.kind(), lite::ConflictKind::Readers);
+assert_eq!(err.count(), Some(1));
 # drop(held);
 ```
 
 The `std` wording is also a trap: `try_borrow_mut()` on a shared borrow returns
-`BorrowMutError`, whose `Display` is `"already borrowed"`, while `try_borrow()`
-on a write returns `"already mutably borrowed"`. Neither names the offending
-line, so you hunt for it by eye.
+`BorrowMutError`, while `try_borrow()` on a write returns `BorrowError`, and the
+two messages (`"already borrowed"` / `"already mutably borrowed"`, or
+`"RefCell already borrowed"` on newer compilers) neither name the offending line
+nor distinguish the case clearly. So you hunt for it by eye.
 
 ### Verbosity, line by line
 
