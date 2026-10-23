@@ -116,6 +116,83 @@ impl<T: ?Sized, S: State> Inner<T, S> {
         self.try_borrow_mut().map(|mut guard| f(&mut guard))
     }
 
+    /// Store a new value, without a closure.
+    ///
+    /// The assignment-shaped form: `cell.set(v)` where the closure form is
+    /// `cell.with_mut(|slot| *slot = v)`. It is the same borrow, released when
+    /// this call returns, so it cannot leak - the only difference is that there
+    /// is nothing to type but the value.
+    ///
+    /// ```
+    /// use lite::{local, shared};
+    ///
+    /// let counter = local(0i32);
+    /// counter.set(5);
+    /// assert_eq!(counter.get(), 5);
+    ///
+    /// let flag: lite::Shared<bool> = shared(false);
+    /// flag.set(true);
+    /// assert!(flag.get());
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is already borrowed. Use
+    /// [`try_set`](Self::try_set) for that case as a `Result`.
+    #[track_caller]
+    pub fn set(&self, value: T)
+    where
+        T: Sized,
+    {
+        // The same path as `with_mut(|slot| *slot = value)`: borrow (panicking
+        // with a location on conflict) and assign in place. Going through
+        // `try_set` instead would wrap the borrow in a `Result` and cost an
+        // extra move of the guard on the hot path.
+        *self.borrow_mut() = value;
+    }
+
+    /// Store a new value, without a closure, or report the conflict.
+    ///
+    /// The non-panicking form of [`set`](Self::set). Like
+    /// [`try_replace`](Self::try_replace), the value is handed back on failure,
+    /// so a refused assignment never loses it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Conflict`] and the unwritten `value` if the cell is
+    /// already borrowed.
+    ///
+    /// ```
+    /// use lite::local;
+    ///
+    /// let cell = local(1i32);
+    /// let held = cell.borrow();
+    /// let (conflict, value) = cell.try_set(2).unwrap_err();
+    /// assert_eq!(value, 2); // handed back, not lost
+    /// assert_eq!(conflict.kind(), lite::ConflictKind::Readers);
+    /// drop(held);
+    /// cell.try_set(2).unwrap();
+    /// assert_eq!(cell.get(), 2);
+    /// ```
+    #[track_caller]
+    pub fn try_set(&self, value: T) -> Result<(), (Conflict, T)>
+    where
+        T: Sized,
+    {
+        // Assign through the guard rather than going via `replace`: `replace`
+        // would move the old value out of the cell and drop it in a temporary,
+        // which is a wasted move for a large `T`. Assigning in place drops the
+        // old value where it sits, and keeping the value owned here is what lets
+        // it be handed back on a conflict.
+        match self.try_borrow_mut() {
+            Ok(mut guard) => {
+                *guard = value;
+                Ok(())
+            }
+            Err(conflict) => Err((conflict, value)),
+        }
+    }
+
     /// Replace the value, returning the old one.
     ///
     /// # Panics
@@ -430,6 +507,65 @@ impl<T: ?Sized> Inner<T, LocalState> {
         self.try_borrow().map(|guard| f(&guard))
     }
 
+    /// Copy the value out, without a closure.
+    ///
+    /// The read-shaped counterpart of [`set`](Self::set): `cell.get()` where
+    /// the closure form is `cell.with(|v| v.clone())`. It requires `T: Clone`
+    /// because the value is handed back by value, and it is the same shared
+    /// borrow the closure form takes - so a `Copy` type reads exactly like
+    /// [`Cell::get`](core::cell::Cell::get), but a conflict panics with a
+    /// location instead of being silently ignored.
+    ///
+    /// ```
+    /// use lite::{inline, local, shared};
+    ///
+    /// let counter = local(vec![1, 2, 3]);
+    /// assert_eq!(counter.get(), vec![1, 2, 3]);
+    ///
+    /// let cell = inline(7u8);
+    /// assert_eq!(cell.get(), 7);
+    ///
+    /// let flag: lite::Shared<bool> = shared(true);
+    /// assert!(flag.get());
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics with a located message if the value cannot be borrowed. Use
+    /// [`try_get`](Self::try_get) for that case as a `Result`.
+    #[track_caller]
+    pub fn get(&self) -> T
+    where
+        T: Clone,
+    {
+        T::clone(&self.borrow())
+    }
+
+    /// Copy the value out, without a closure, or report the conflict.
+    ///
+    /// The non-panicking form of [`get`](Self::get).
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Conflict`] if the value cannot be borrowed.
+    ///
+    /// ```
+    /// use lite::local;
+    ///
+    /// let cell = local(1i32);
+    /// let held = cell.borrow_mut();
+    /// assert!(cell.try_get().is_err());
+    /// drop(held);
+    /// assert_eq!(cell.try_get().unwrap(), 1);
+    /// ```
+    #[track_caller]
+    pub fn try_get(&self) -> Result<T, Conflict>
+    where
+        T: Clone,
+    {
+        self.try_with(T::clone)
+    }
+
     /// Compare two cells for equality, reporting a conflict instead of
     /// panicking.
     ///
@@ -511,6 +647,65 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
     #[track_caller]
     pub fn try_with<R>(&self, f: impl FnOnce(&T) -> R) -> Result<R, Conflict> {
         self.try_borrow().map(|guard| f(&guard))
+    }
+
+    /// Copy the value out, without a closure.
+    ///
+    /// The read-shaped counterpart of [`set`](Self::set): `cell.get()` where
+    /// the closure form is `cell.with(|v| v.clone())`. It requires `T: Clone`
+    /// because the value is handed back by value, and it is the same shared
+    /// borrow the closure form takes - so a `Copy` type reads exactly like
+    /// [`Cell::get`](core::cell::Cell::get), but a conflict panics with a
+    /// location instead of being silently ignored.
+    ///
+    /// ```
+    /// use lite::{inline, local, shared};
+    ///
+    /// let counter = local(vec![1, 2, 3]);
+    /// assert_eq!(counter.get(), vec![1, 2, 3]);
+    ///
+    /// let cell = inline(7u8);
+    /// assert_eq!(cell.get(), 7);
+    ///
+    /// let flag: lite::Shared<bool> = shared(true);
+    /// assert!(flag.get());
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics with a located message if the value cannot be borrowed. Use
+    /// [`try_get`](Self::try_get) for that case as a `Result`.
+    #[track_caller]
+    pub fn get(&self) -> T
+    where
+        T: Clone,
+    {
+        T::clone(&self.borrow())
+    }
+
+    /// Copy the value out, without a closure, or report the conflict.
+    ///
+    /// The non-panicking form of [`get`](Self::get).
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Conflict`] if the value cannot be borrowed.
+    ///
+    /// ```
+    /// use lite::local;
+    ///
+    /// let cell = local(1i32);
+    /// let held = cell.borrow_mut();
+    /// assert!(cell.try_get().is_err());
+    /// drop(held);
+    /// assert_eq!(cell.try_get().unwrap(), 1);
+    /// ```
+    #[track_caller]
+    pub fn try_get(&self) -> Result<T, Conflict>
+    where
+        T: Clone,
+    {
+        self.try_with(T::clone)
     }
 
     /// Compare two cells for equality, reporting a conflict instead of

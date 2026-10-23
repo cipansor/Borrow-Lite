@@ -529,11 +529,54 @@ fn equality(c: &mut Criterion) {
     self_group.finish();
 }
 
+/// The closure-free forms, which are the shortest way to read and write.
+///
+/// `get`/`set` are thin wrappers over the same borrow the closure forms take,
+/// so the claim that they cost the same is measured rather than asserted: the
+/// `std` column is `Cell::get`/`Cell::set`, the construct they are shaped
+/// after, and the `with` row is the closure form they replace.
+fn closure_free_forms(c: &mut Criterion) {
+    let std_cell = Cell::new(0u64);
+    let lite_cell: Local<u64> = local(0);
+
+    let mut read = c.benchmark_group("get/local");
+    read.bench_function("std/Cell::get", |b| {
+        b.iter(|| black_box(std_cell.get()));
+    });
+    read.bench_function("lite/Local::get", |b| {
+        b.iter(|| black_box(lite_cell.get()));
+    });
+    read.bench_function("lite/Local::with", |b| {
+        b.iter(|| lite_cell.with(|value| black_box(*value)));
+    });
+    read.finish();
+
+    let mut write = c.benchmark_group("set/local");
+    write.bench_function("std/Cell::set", |b| {
+        b.iter(|| std_cell.set(black_box(1)));
+    });
+    write.bench_function("lite/Local::set", |b| {
+        b.iter(|| lite_cell.set(black_box(1)));
+    });
+    // The value is materialised *before* the closure, so both sides receive it
+    // the same way. Black-boxing inside the closure instead - the obvious form
+    // - measures the closure-capture of a black box, not the cell, and reports
+    // a ~20% penalty that `set` does not actually pay.
+    write.bench_function("lite/Local::with_mut", |b| {
+        b.iter(|| {
+            let value = black_box(1);
+            lite_cell.with_mut(|slot| *slot = value);
+        });
+    });
+    write.finish();
+}
+
 criterion_group!(
     benches,
     read_local,
     write_local,
     closure_form,
+    closure_free_forms,
     churn_local,
     read_shared,
     write_shared,

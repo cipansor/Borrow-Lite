@@ -94,6 +94,44 @@ fn half_or_more_shorter_where_std_is_awkward() {
         "eq: {:.0}%",
         100.0 * reduction(std_eq, lite_eq)
     );
+
+    // Reading a value out, closure-free. `get` has no `*` and no guard binding,
+    // so it is shorter than both the `RefCell` guard form and lite's own closure
+    // form; the guard form is the tighter of the two, so it is the one that
+    // sets the floor.
+    let std_get = r#"
+        let n = *counter.borrow();
+    "#;
+    let closure_get = r#"
+        let n = counter.with(|v| *v);
+    "#;
+    let lite_get = r#"
+        let n = counter.get();
+    "#;
+    assert!(
+        reduction(std_get, lite_get) >= 0.15,
+        "get vs std guard: {:.0}%",
+        100.0 * reduction(std_get, lite_get)
+    );
+    assert!(
+        reduction(closure_get, lite_get) >= 0.20,
+        "get vs closure form: {:.0}%",
+        100.0 * reduction(closure_get, lite_get)
+    );
+
+    // Storing a value, closure-free. Against `RefCell`'s `*c.borrow_mut() = x`
+    // the win is the deref and the guard scope.
+    let std_set = r#"
+        *counter.borrow_mut() = 5;
+    "#;
+    let lite_set = r#"
+        counter.set(5);
+    "#;
+    assert!(
+        reduction(std_set, lite_set) >= 0.20,
+        "set: {:.0}%",
+        100.0 * reduction(std_set, lite_set)
+    );
 }
 
 /// Cases where `lite` is *not* shorter, kept honest on purpose.

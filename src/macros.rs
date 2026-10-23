@@ -261,7 +261,6 @@ macro_rules! cell {
                 }
             )*
         }
-
         impl Clone for $name {
             fn clone(&self) -> Self {
                 Self(self.0.clone())

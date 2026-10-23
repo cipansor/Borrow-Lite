@@ -146,6 +146,8 @@ readability.
 | build alone, then share | `Rc::new(RefCell::new(v))`, `Rc::get_mut` | `local(v)`, `get_mut` | **24%** |
 | read a field of a struct | `stats.borrow().count` | `*stats.count()` | **21%** |
 | write a field of a struct | `stats.borrow_mut().count += 1` | `*stats.count_mut() += 1` | **20%** |
+| read a scalar, closure-free | `*counter.borrow()` | `counter.get()` | **15%** |
+| write a scalar, closure-free | `*counter.borrow_mut() = 5` | `counter.set(5)` | **15%** |
 | clone a field out | `stats.borrow().name.clone()` | `stats.name().clone()` | **19%** |
 | a scoped read of a scalar | `*counter.borrow()` | `counter.with(\|v\| *v)` | **-12%** (longer) |
 | a scoped write of a scalar | `*counter.borrow_mut() += 1` | `counter.with_mut(\|v\| *v += 1)` | **-11%** (longer) |
@@ -183,6 +185,7 @@ which `lite` one:
 | build one | `Rc::new(RefCell::new(v))` | `local(v)` |
 | recover from a conflict | `.try_borrow_mut()` -> `Err(BorrowMutError)`, no location | `.try_borrow_mut()` -> `Err(Conflict)`, located |
 | a guard that cannot leak | manual `drop` or a `let _ = ..` block | `with`/`with_mut`, by construction |
+| read/write a scalar, no closure | `*c.borrow()`, `*c.borrow_mut() = x` | `c.get()`, `c.set(x)` |
 | wait for a busy cell | `lock()` - blocks, and poisons on panic | retry loop, or the bounded `retry(n, op)` |
 
 Two rows are the whole pitch. A conflict becomes a value you can match on
@@ -198,7 +201,11 @@ Ergonomics is a trade, not a free win, and a few places cost more keystrokes:
   `RefCell`. A `Deref`-based read is shorter but cannot be made safe here.
 - **Writes nest one level deeper.** `*c.borrow_mut() = x` becomes
   `c.with_mut(|v| *v = x)`. The closure is the price of the borrow being
-  released for you.
+  released for you - unless you take the closure-free form below.
+- **`get`/`set` remove the closure, not the copy.** For a scalar they are the
+  shortest option (`c.get()`, `c.set(x)`), and they keep the located panic on
+  conflict. `get` still needs `T: Clone`, because the value leaves the cell by
+  value, exactly as `with(|v| v.clone())` does.
 - **`get_mut` returns `Option`.** Like `RefCell::get_mut`, because a second
   handle means a borrow could exist; you `.unwrap()` it.
 - **`cell!` needs two names**, the handle and the value struct, because a
@@ -286,6 +293,24 @@ assert_eq!((total, stats.with(|v| v.len())), (6, 4));
 `with` and `with_mut` release the borrow before they return, so the pattern
 above cannot produce a conflict. When you do want a guard, `borrow`/`borrow_mut`
 and the `borrow!`/`borrow_mut!` macros are still there.
+
+When the operation is a plain read or a plain store, the closure is noise, so
+`get` and `set` are the closure-free spelling of the same borrow:
+
+```rust
+use lite::shared;
+
+let counter = shared(0i32);
+counter.set(5);       // == counter.with_mut(|v| *v = 5)
+assert_eq!(counter.get(), 5); // == counter.with(|v| *v)
+```
+
+They keep the same contract as the closure forms: the borrow is released before
+the call returns, a conflict panics with the holder's location, and the `try_`
+twins (`try_get`, `try_set`) report it as an `Err` instead - with `try_set`
+handing the unwritten value back. `get` requires `T: Clone` because the value
+leaves the cell by value. The `cell!` field accessors are already closure-free
+in the same way, so `*stats.count()` reads and `*stats.count_mut() += 1` writes.
 
 One limit worth knowing before you reach for `with`: **the closure cannot return
 a reference into the cell.** The guard is gone by the time it returns, so the
@@ -796,6 +821,8 @@ Treat them as orders of magnitude, not as absolutes.
 |---|---|---|---|
 | read borrow, one thread | 1.19 ns | 1.51 ns | +0.32 ns |
 | write borrow, one thread | 1.49 ns | 2.09 ns | +0.60 ns |
+| read a scalar (`get`) | `Cell::get` 0.59 ns | 1.49 ns | +0.90 ns |
+| write a scalar (`set`) | `Cell::set` 0.59 ns | 1.19 ns | +0.60 ns |
 | read borrow, shared | 5.15 ns | 4.20 ns | **faster** |
 | write borrow, shared | 4.65 ns | 3.88 ns | **faster** |
 | refused write borrow | 0.60 ns | 0.69 ns | +0.09 ns |
@@ -820,6 +847,12 @@ because it writes a `Location` into a `Cell` that `RefCell` does not have. On
 the recommended `with`/`with_mut` path it is about 2.7 ns against 0.89 ns for a
 bare `Cell`, so call it roughly 1.8 ns per call - that is the price of the
 message you get when something goes wrong.
+
+**`get` is faster than the `with` form it replaces** (1.49 ns against 2.38 ns),
+because the closure does not inline away in the benchmark harness. `set` is
+level with `with_mut` (1.19 ns against 1.18 ns) once both sides receive the
+value the same way - comparing them with a `black_box` *inside* the closure
+reports a 20% penalty that is an artefact of the benchmark, not of the cell.
 
 **Cloning and allocation are unchanged.** The handle is still an `Rc`/`Arc`,
 and the cell is still one allocation - verified by counting allocator calls, not

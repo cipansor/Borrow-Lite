@@ -1043,3 +1043,92 @@ mod holder_locations {
         assert!(panic.is_err());
     }
 }
+
+/// `get`/`set` are the closure-free forms, and they must be exact stand-ins for
+/// the closure forms they mirror - `with(|v| v.clone())` and `with_mut(|v| *v =
+/// x)` - including the borrow discipline and the located panic on conflict.
+mod closure_free_access {
+    use super::*;
+
+    #[test]
+    fn get_and_set_match_the_closure_forms() {
+        let cell = local(1i32);
+        cell.set(2);
+        assert_eq!(cell.get(), 2);
+        assert_eq!(cell.with(|v| *v), 2);
+
+        // The closure-free and closure forms agree on a non-Copy payload too.
+        let names = local(vec![String::from("a")]);
+        names.set(vec![String::from("b"), String::from("c")]);
+        assert_eq!(names.get(), vec![String::from("b"), String::from("c")]);
+    }
+
+    #[test]
+    fn get_matches_cell_get_for_a_copy_type() {
+        // Differential against `Cell`, the construct `get` is shaped after.
+        let lite = local(7u8);
+        let std = std::cell::Cell::new(7u8);
+        assert_eq!(lite.get(), std.get());
+        lite.set(9);
+        std.set(9);
+        assert_eq!(lite.get(), std.get());
+    }
+
+    #[test]
+    fn set_releases_the_borrow_so_it_cannot_leak() {
+        let cell = local(0u8);
+        for value in 0..10 {
+            cell.set(value); // would deadlock if `set` kept the guard
+        }
+        assert_eq!(cell.get(), 9);
+        // And the cell is free afterwards, unlike a leaked `borrow_mut`.
+        assert!(cell.try_borrow_mut().is_ok());
+    }
+
+    #[test]
+    fn set_on_a_shared_cell_reaches_every_handle() {
+        let a: Shared<i32> = shared(0);
+        let b = a.clone();
+        b.set(41);
+        assert_eq!(a.get(), 41);
+    }
+
+    #[test]
+    fn get_panics_with_a_location_when_the_cell_is_busy() {
+        let cell = local(1i32);
+        let held = cell.borrow_mut();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cell.get()));
+        let payload = panic.expect_err("get must panic while the cell is write-borrowed");
+        let message = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+            .expect("a string panic message");
+        assert!(
+            message.contains("held at"),
+            "the panic must name the holder's location, got: {message}"
+        );
+        drop(held);
+        assert_eq!(cell.get(), 1);
+    }
+
+    #[test]
+    fn try_set_hands_the_value_back_on_conflict() {
+        let cell = local(String::from("old"));
+        let held = cell.borrow();
+        let (conflict, value) = cell.try_set(String::from("new")).unwrap_err();
+        assert_eq!(conflict.kind(), ConflictKind::Readers);
+        assert_eq!(value, "new", "the unwritten value must come back");
+        assert_eq!(cell.try_get().unwrap(), "old", "nothing was stored");
+        drop(held);
+    }
+
+    #[test]
+    fn try_get_reports_the_conflict_instead_of_panicking() {
+        let cell = local(5u8);
+        let held = cell.borrow_mut();
+        assert!(cell.try_get().is_err());
+        drop(held);
+        assert_eq!(cell.try_get().unwrap(), 5);
+    }
+}
