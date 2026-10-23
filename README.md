@@ -128,7 +128,52 @@ two messages (`"already borrowed"` / `"already mutably borrowed"`, or
 `"RefCell already borrowed"` on newer compilers) neither name the offending line
 nor distinguish the case clearly. So you hunt for it by eye.
 
-### Verbosity, line by line
+### How much shorter, measured
+
+"More ergonomic" is worth nothing as a slogan, so the two sides are counted.
+The numbers below are code characters (blank lines and comments dropped) of the
+idiomatic form of each side; `tests/ergonomics.rs` computes them and fails if a
+claim stops holding. Character count is a proxy for what you type, not for
+readability.
+
+| Task | `std` | `lite` | shorter by |
+|---|---|---|---|
+| swap two cells | `std::mem::swap(&mut *a.borrow_mut(), &mut *b.borrow_mut())` | `a.swap(&b)` | **81%** |
+| wire an observer (re-entrancy safe) | build both `Rc<RefCell<..>>`, drain before notifying | `Observable::new`, `observe`, `update` | **75%** |
+| take the value back out | `Rc::try_unwrap(v).ok().unwrap().into_inner()` | `v.into_inner()` | **57%** |
+| compare two cells by value | `*a.borrow() == *b.borrow()` | `a == b` | **53%** |
+| read then write, one statement each | two guard scopes | `with` + `with_mut` | **27%** |
+| build alone, then share | `Rc::new(RefCell::new(v))`, `Rc::get_mut` | `local(v)`, `get_mut` | **24%** |
+| read a field of a struct | `stats.borrow().count` | `*stats.count()` | **21%** |
+| write a field of a struct | `stats.borrow_mut().count += 1` | `*stats.count_mut() += 1` | **20%** |
+| clone a field out | `stats.borrow().name.clone()` | `stats.name().clone()` | **19%** |
+| a scoped read of a scalar | `*counter.borrow()` | `counter.with(\|v\| *v)` | **-12%** (longer) |
+| a scoped write of a scalar | `*counter.borrow_mut() += 1` | `counter.with_mut(\|v\| *v += 1)` | **-11%** (longer) |
+| a threaded counter, 4 threads | `Arc<RwLock<_>>`, `write().unwrap()` | retry loop with `yield_now` | **-17%** (longer) |
+
+The honest reading is that there are two regimes:
+
+* **A single borrow is already minimal in `std`.** `*c.borrow()` is three tokens
+  the compiler cannot be talked out of, so the closure form is *longer* on that
+  one line. What you get there is not fewer keys: the borrow cannot leak, and a
+  refused borrow names a location instead of saying `already borrowed`. If you
+  want the shortest line, the guard form (`borrow`/`borrow_mut`) is exactly as
+  long as `RefCell`'s.
+* **A pattern is where the gap opens.** The moment a task is more than one
+  borrow - swap, compare, tear down, read-then-write, observers, a struct of
+  fields - each `std` step needs its own guard scope, its own `Rc::clone`, or its
+  own hand-rolled `PartialEq`, and the saving compounds: 20-27% for a short
+  sequence, 53-81% for the shapes people actually complain about.
+
+So the claim is deliberately not "always 50% shorter". It is "the same length
+for one borrow, and 20-81% shorter the moment there is a pattern" - which is
+where `Rc<RefCell<T>>` and `Arc<RwLock<T>>` stop being fun.
+
+### Construct by construct
+
+The measured table above covers the *repetitive* lines (reads, writes, field
+access). This one is the mapping for the rest - which `std` construct becomes
+which `lite` one:
 
 | Task | old (`std`) | `lite` |
 |---|---|---|
@@ -136,8 +181,6 @@ nor distinguish the case clearly. So you hunt for it by eye.
 | shared cell, one thread | `Rc<RefCell<T>>` | `Local<T>` |
 | shared cell, many threads | `Arc<RwLock<T>>` | `Shared<T>` |
 | build one | `Rc::new(RefCell::new(v))` | `local(v)` |
-| read, scoped | `*c.borrow()` | `c.with(\|v\| *v)` |
-| write, scoped | `*c.borrow_mut() += 1;` | `c.with_mut(\|v\| *v += 1);` |
 | recover from a conflict | `.try_borrow_mut()` -> `Err(BorrowMutError)`, no location | `.try_borrow_mut()` -> `Err(Conflict)`, located |
 | a guard that cannot leak | manual `drop` or a `let _ = ..` block | `with`/`with_mut`, by construction |
 | wait for a busy cell | `lock()` - blocks, and poisons on panic | retry loop, or the bounded `retry(n, op)` |
