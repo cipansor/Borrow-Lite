@@ -336,6 +336,74 @@ impl<T> Observable<T> {
         self.value.try_with(f)
     }
 
+    /// Copy the value out, without a closure.
+    ///
+    /// The read-shaped counterpart of [`set`](Self::set), and the closure-free
+    /// spelling of `with(|v| v.clone())`. It takes the same shared borrow, so
+    /// reading from inside an *observer* is fine; a read from inside an
+    /// [`update`](Self::update) closure panics with a located message, exactly
+    /// as [`with`](Self::with) does. `T: Clone` is required because the value
+    /// leaves by value.
+    ///
+    /// ```
+    /// use lite::Observable;
+    ///
+    /// let value = Observable::new(vec![1, 2, 3]);
+    /// assert_eq!(value.get(), vec![1, 2, 3]);
+    ///
+    /// value.set(vec![4]);
+    /// assert_eq!(value.get(), vec![4]);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the value is exclusively borrowed, which happens when this is
+    /// called from inside an [`update`](Self::update) closure. Use
+    /// [`try_get`](Self::try_get) for that case as an error.
+    #[must_use]
+    #[track_caller]
+    pub fn get(&self) -> T
+    where
+        T: Clone,
+    {
+        self.value.get()
+    }
+
+    /// Copy the value out, without a closure, or report the conflict.
+    ///
+    /// The non-panicking form of [`get`](Self::get).
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Conflict`] if the value is exclusively borrowed, i.e. from
+    /// inside an [`update`](Self::update) closure.
+    ///
+    /// ```
+    /// use lite::Observable;
+    ///
+    /// let value = Observable::new(0i32);
+    /// let inner = value.clone();
+    /// let outcome = Observable::new(None);
+    /// let outcome_in_update = outcome.clone();
+    ///
+    /// value.update(|_| {
+    ///     // The value is exclusively borrowed here, so a re-entrant read is
+    ///     // reported rather than panicking.
+    ///     outcome_in_update.update(|slot| *slot = Some(inner.try_get().is_err()));
+    /// });
+    /// assert_eq!(outcome.with(|o| *o), Some(true));
+    ///
+    /// // Idle, it succeeds.
+    /// assert_eq!(value.try_get(), Ok(0));
+    /// ```
+    #[track_caller]
+    pub fn try_get(&self) -> Result<T, Conflict>
+    where
+        T: Clone,
+    {
+        self.value.try_get()
+    }
+
     /// Mutate the value and notify the observers.
     ///
     /// # Panics

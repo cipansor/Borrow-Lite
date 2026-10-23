@@ -377,6 +377,34 @@ fn a_read_does_not_notify() {
     assert_eq!(calls.with(|c| *c), 1);
 }
 
+/// `get`/`try_get` are the closure-free spelling of `with`, so they must agree
+/// with it on every path, including the re-entrant one.
+#[test]
+fn get_matches_with_and_does_not_notify() {
+    let source = Observable::new(vec![1i32, 2, 3]);
+    let calls = Observable::new(0usize);
+    let calls_in_observer = calls.clone();
+    source.observe(move |_| calls_in_observer.update(|c| *c += 1));
+
+    assert_eq!(source.get(), source.with(|v| v.clone()));
+    assert_eq!(calls.with(|c| *c), 0, "a read notified the observers");
+
+    // A clone is the same cell, so a write through one handle is visible.
+    let alias = source.clone();
+    alias.set(vec![4]);
+    assert_eq!(source.get(), vec![4]);
+    assert_eq!(calls.with(|c| *c), 1);
+
+    // Re-entrant read: `get` panics like `with`, `try_get` reports.
+    let idle = Observable::new(0u8);
+    assert_eq!(idle.try_get(), Ok(0));
+    let inner = idle.clone();
+    let outcome = Observable::new(None);
+    let outcome_in_update = outcome.clone();
+    idle.update(|_| outcome_in_update.set(Some(inner.try_get().is_err())));
+    assert_eq!(outcome.get(), Some(true));
+}
+
 /// `unobserve` from inside an observer may target a *different* observer, not
 /// just the running one, and the second call for the same id must report
 /// `false`.

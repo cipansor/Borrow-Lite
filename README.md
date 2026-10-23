@@ -142,6 +142,7 @@ readability.
 | wire an observer (re-entrancy safe) | build both `Rc<RefCell<..>>`, drain before notifying | `Observable::new`, `observe`, `update` | **75%** |
 | take the value back out | `Rc::try_unwrap(v).ok().unwrap().into_inner()` | `v.into_inner()` | **57%** |
 | compare two cells by value | `*a.borrow() == *b.borrow()` | `a == b` | **53%** |
+| read an `Observable`, closure-free | `source.with(\|v\| v.clone())` | `source.get()` | **34%** |
 | read then write, one statement each | two guard scopes | `with` + `with_mut` | **27%** |
 | build alone, then share | `Rc::new(RefCell::new(v))`, `Rc::get_mut` | `local(v)`, `get_mut` | **24%** |
 | read a field of a struct | `stats.borrow().count` | `*stats.count()` | **21%** |
@@ -310,7 +311,9 @@ the call returns, a conflict panics with the holder's location, and the `try_`
 twins (`try_get`, `try_set`) report it as an `Err` instead - with `try_set`
 handing the unwritten value back. `get` requires `T: Clone` because the value
 leaves the cell by value. The `cell!` field accessors are already closure-free
-in the same way, so `*stats.count()` reads and `*stats.count_mut() += 1` writes.
+in the same way, so `*stats.count()` reads and `*stats.count_mut() += 1` writes,
+and [`Observable`](#observers-without-the-usual-re-entrancy-bugs) carries the
+same pair (`get`/`try_get` alongside its existing `set`/`try_set`).
 
 One limit worth knowing before you reach for `with`: **the closure cannot return
 a reference into the cell.** The guard is gone by the time it returns, so the
@@ -1115,8 +1118,9 @@ wiring. At 25 ns an update it only matters in a loop that runs millions of
 times, which is exactly when the observer pattern is the wrong shape anyway.
 
 `Observable` now has the same value-lifetime paths `Local` does - `get_mut`,
-`into_inner`, `replace`/`try_replace`, `take`/`try_take`, plus the read twin
-`with`/`try_with` - and `cargo bench --bench observable -- lifecycle` prices them
+`into_inner`, `replace`/`try_replace`, `take`/`try_take`, plus the read twins
+`with`/`try_with` and the closure-free `get`/`try_get` - and
+`cargo bench --bench observable -- lifecycle` prices them
 against `Local` so the notification is visible in the difference:
 
 | Path | `Local` | `Observable` |

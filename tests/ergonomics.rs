@@ -245,3 +245,23 @@ fn the_gap_widens_with_the_number_of_steps() {
     let store = reduction(std_store, lite_store);
     assert!(store >= 0.60, "observable store: {:.0}%", 100.0 * store);
 }
+
+/// `Observable` carries the same closure-free pair as the cells, so the read
+/// side is worth counting too.
+#[test]
+fn observable_get_is_shorter_than_the_closure_form() {
+    // Reading an `Observable`'s value. Its own `with` is the honest baseline,
+    // because the std equivalent would be `Rc<RefCell<_>>` plus the observer
+    // bookkeeping that `Observable` already folds in.
+    let closure_read = r#"
+        let current = source.with(|v| v.clone());
+    "#;
+    let lite_read = r#"
+        let current = source.get();
+    "#;
+    assert!(
+        reduction(closure_read, lite_read) >= 0.20,
+        "observable get: {:.0}%",
+        100.0 * reduction(closure_read, lite_read)
+    );
+}
