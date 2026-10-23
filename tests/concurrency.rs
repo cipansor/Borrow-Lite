@@ -252,3 +252,34 @@ fn shared_borrows_coexist_across_threads() {
     );
     assert!(cell.try_borrow_mut().is_ok(), "borrows were not released");
 }
+
+/// A refused reader must always be told where the writer is.
+///
+/// The writer holds the cell for the whole scope, so every `Err` is a genuine
+/// writer conflict and must carry a location. This is the runtime counterpart of
+/// `a_writer_conflict_always_carries_a_location` in `tests/loom.rs`: the loom
+/// model explores the interleavings, this pins the outcome on a real machine.
+#[test]
+fn a_writer_conflict_always_names_the_writer() {
+    let cell: Shared<u32> = shared(0);
+    let writer = cell.clone();
+    let reader = cell.clone();
+
+    let guard = writer.borrow_mut();
+
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for _ in 0..64 {
+                let conflict = reader.try_borrow().expect_err("the writer holds the cell");
+                assert_eq!(conflict.kind(), lite::ConflictKind::Writer);
+                assert!(
+                    conflict.holder().is_some(),
+                    "a writer conflict did not name the writer"
+                );
+            }
+        });
+    });
+
+    drop(guard);
+    assert!(cell.try_borrow().is_ok(), "the borrow was not released");
+}
