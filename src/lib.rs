@@ -262,6 +262,34 @@ pub struct Local<T: ?Sized>(Rc<Inner<T, state::LocalState>>);
 /// fn is_send<T: Send>() {}
 /// is_send::<lite::Shared<std::rc::Rc<u8>>>();
 /// ```
+///
+/// ```compile_fail
+/// // A `Sync` but `!Send` payload must not be shareable either. `MutexGuard`
+/// // is `Sync` (when its `T` is) but `!Send`; sharing the cell would let another
+/// // thread take `&mut` and drop or move the guard on the wrong thread, which is
+/// // exactly what `!Send` forbids. So `Shared` needs `T: Send + Sync`, not just
+/// // `T: Sync`.
+/// fn is_sync<T: Sync>() {}
+/// is_sync::<lite::Shared<std::sync::MutexGuard<'static, u8>>>();
+/// ```
+///
+/// The same hole through the [`Deref`] target rather than the handle: reaching
+/// `&Inner` directly and sending *that* to a scoped thread is refused too.
+///
+/// ```compile_fail
+/// use lite::{shared, Inner, state::AtomicState};
+/// use std::sync::{Mutex, MutexGuard};
+///
+/// let m: &'static Mutex<u8> = Box::leak(Box::new(Mutex::new(1)));
+/// let cell = shared(m.lock().unwrap());
+/// let inner: &Inner<MutexGuard<'static, u8>, AtomicState> = &cell;
+/// std::thread::scope(|s| {
+///     s.spawn(move || {
+///         // error: `MutexGuard` cannot be sent between threads safely
+///         inner.with_mut(|slot| drop(std::mem::replace(slot, m.lock().unwrap())));
+///     });
+/// });
+/// ```
 pub struct Shared<T: ?Sized>(Arc<Inner<T, state::AtomicState>>);
 
 /// Shared, mutable data stored inside the value itself.

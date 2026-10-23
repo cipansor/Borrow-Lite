@@ -36,10 +36,16 @@ pub struct Inner<T: ?Sized, S: State> {
 // `T: Send`; `S: Send` covers the flags.
 unsafe impl<T: ?Sized + Send, S: State + Send> Send for Inner<T, S> {}
 
-// SAFETY: sharing `&Inner` lets other threads take shared borrows, which hands
-// out `&T`; that is sound exactly when `T: Sync`. Exclusive borrows are
-// serialised by the flags, so they add no further requirement.
-unsafe impl<T: ?Sized + Sync, S: State + Sync> Sync for Inner<T, S> {}
+// SAFETY: sharing `&Inner` lets another thread reach the value two ways, and
+// each needs its own bound. A *shared* borrow hands out `&T`, which is sound
+// only when `T: Sync`. An *exclusive* borrow hands out `&mut T`, and `&mut T`
+// is enough to move or drop the value - so it requires `T: Send` as well. The
+// `T: Send` half is easy to miss because the exclusive methods themselves are
+// available for any `T` (they need only the flags); it is the *sharing* of the
+// cell across threads that must be forbidden for a `!Send` payload. Without it
+// a `Sync + !Send` value such as a `MutexGuard` could be swapped out and
+// dropped on another thread, which is exactly what `!Send` forbids.
+unsafe impl<T: ?Sized + Send + Sync, S: State + Sync> Sync for Inner<T, S> {}
 
 impl<T, S: State> Inner<T, S> {
     pub(crate) fn new_in(value: T) -> Self {
@@ -399,7 +405,7 @@ impl<T: ?Sized> Inner<T, LocalState> {
     #[track_caller]
     pub fn borrow(&self) -> ReadGuard<'_, T, LocalState> {
         match self.state.try_shared(Location::caller()) {
-            Ok(()) => ReadGuard::new(&self.state, self.value.get()),
+            Ok(recorder) => ReadGuard::new(&self.state, self.value.get(), recorder),
             Err(conflict) => panic!("{}", conflict.into_panic_message()),
         }
     }
@@ -409,7 +415,7 @@ impl<T: ?Sized> Inner<T, LocalState> {
     pub fn try_borrow(&self) -> Result<ReadGuard<'_, T, LocalState>, Conflict> {
         self.state
             .try_shared(Location::caller())
-            .map(|()| ReadGuard::new(&self.state, self.value.get()))
+            .map(|recorder| ReadGuard::new(&self.state, self.value.get(), recorder))
     }
 
     /// Run `f` with a shared borrow, released before this call returns.
@@ -482,7 +488,7 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
     #[track_caller]
     pub fn borrow(&self) -> ReadGuard<'_, T, AtomicState> {
         match self.state.try_shared(Location::caller()) {
-            Ok(()) => ReadGuard::new(&self.state, self.value.get()),
+            Ok(recorder) => ReadGuard::new(&self.state, self.value.get(), recorder),
             Err(conflict) => panic!("{}", conflict.into_panic_message()),
         }
     }
@@ -492,7 +498,7 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
     pub fn try_borrow(&self) -> Result<ReadGuard<'_, T, AtomicState>, Conflict> {
         self.state
             .try_shared(Location::caller())
-            .map(|()| ReadGuard::new(&self.state, self.value.get()))
+            .map(|recorder| ReadGuard::new(&self.state, self.value.get(), recorder))
     }
 
     /// Run `f` with a shared borrow, released before this call returns.

@@ -83,16 +83,20 @@ impl Conflict {
 
     /// Where the borrow that is in the way was taken, if known.
     ///
-    /// `None` is possible, and the two cases are worth knowing:
+    /// `None` is possible, and the cases are worth knowing:
     ///
     /// - On a [`Shared`](crate::Shared) cell a conflict blamed on
     ///   [`Readers`](ConflictKind::Readers) has no holder. Readers do not record
     ///   their location - that would be an atomic store on every read borrow,
     ///   and it would race - so the [`count`](Self::count) is reported instead.
-    ///   A writer conflict always names the writer.
-    /// - On a [`Local`](crate::Local) cell the holder is always recorded when a
-    ///   borrow is in the way: the first reader for a readers conflict, the
-    ///   writer for a writer conflict.
+    ///   A writer conflict always names the writer, because the writer claims the
+    ///   cell and publishes its location in one compare-exchange.
+    /// - On a [`Local`](crate::Local) cell the *first* reader records its
+    ///   location, and it is named while that reader is alive - including when it
+    ///   is the only reader. Once it is dropped while other readers remain, the
+    ///   holder becomes `None` rather than naming a borrow that has already been
+    ///   released; the [`count`](Self::count) still reports how many readers
+    ///   block the write. A writer conflict always names the writer.
     #[must_use]
     pub const fn holder(self) -> Option<&'static Location<'static>> {
         self.holder

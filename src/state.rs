@@ -4,7 +4,7 @@
 //! the `guards` module; everything else is safe code on top.
 #![allow(unsafe_code)]
 
-use crate::sync::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use crate::sync::{AtomicPtr, AtomicUsize, Ordering};
 use core::cell::Cell;
 use core::panic::Location;
 
@@ -26,13 +26,21 @@ pub trait State: sealed::Sealed + 'static {
     fn new() -> Self;
 
     /// Record a shared borrow, or explain why it is impossible.
-    fn try_shared(&self, wanted: &'static Location<'static>) -> Result<(), Conflict>;
+    ///
+    /// Returns `true` if *this* borrow is the one that recorded the holder, so
+    /// the guard can clear it on release. See [`State::end_shared`].
+    fn try_shared(&self, wanted: &'static Location<'static>) -> Result<bool, Conflict>;
 
     /// Record an exclusive borrow, or explain why it is impossible.
     fn try_exclusive(&self, wanted: &'static Location<'static>) -> Result<(), Conflict>;
 
     /// Release a shared borrow previously granted by [`State::try_shared`].
-    fn end_shared(&self);
+    ///
+    /// `recorder` is the flag [`State::try_shared`] returned: only the borrow
+    /// that recorded the holder may clear it, and only it. A different reader
+    /// leaving must leave the holder alone - it names the recorder, which may
+    /// still be alive.
+    fn end_shared(&self, recorder: bool);
 
     /// Record an extra shared borrow that is already known to be possible.
     ///
@@ -82,7 +90,7 @@ impl State for LocalState {
         Self::unborrowed()
     }
 
-    fn try_shared(&self, wanted: &'static Location<'static>) -> Result<(), Conflict> {
+    fn try_shared(&self, wanted: &'static Location<'static>) -> Result<bool, Conflict> {
         if self.exclusive.get() {
             return Err(Conflict::new(ConflictKind::Writer)
                 .with_holder(self.holder.get())
@@ -90,10 +98,11 @@ impl State for LocalState {
         }
         let next = self.shared.get() + 1;
         self.shared.set(next);
-        if next == 1 {
+        let recorder = next == 1;
+        if recorder {
             self.holder.set(Some(wanted));
         }
-        Ok(())
+        Ok(recorder)
     }
 
     fn try_exclusive(&self, wanted: &'static Location<'static>) -> Result<(), Conflict> {
@@ -114,10 +123,14 @@ impl State for LocalState {
         Ok(())
     }
 
-    fn end_shared(&self) {
+    fn end_shared(&self, recorder: bool) {
         let next = self.shared.get() - 1;
         self.shared.set(next);
-        if next == 0 {
+        // Only the recording reader clears the holder. If a *different* reader
+        // left first, the recorder may still be alive, so the holder must stay;
+        // it is cleared when the recorder itself goes, or when the last reader
+        // goes (a safety net for the clone path, which does not set the flag).
+        if recorder || next == 0 {
             self.holder.set(None);
         }
     }
@@ -133,10 +146,21 @@ impl State for LocalState {
 }
 
 /// Atomic flags for a cell shared between threads.
+///
+/// The writer side is a single `AtomicPtr`: it is null when no writer holds the
+/// cell, and the writer's location when one does. Folding the "a writer is here"
+/// bit and the "where" pointer into one word is what makes a writer conflict
+/// always carry a location - there is no window in which the flag is set but the
+/// location has not been published yet, because claiming the cell and publishing
+/// the location are the *same* compare-exchange.
+///
+/// Readers are a separate `AtomicUsize` count. A reader does not record its
+/// location: that would be an atomic store on every read borrow, and it would
+/// race (last writer wins). So a readers conflict reports its count but no
+/// holder, which is the one documented gap.
 pub struct AtomicState {
     shared: AtomicUsize,
-    exclusive: AtomicBool,
-    holder: AtomicPtr<()>,
+    writer: AtomicPtr<()>,
 }
 
 impl AtomicState {
@@ -145,37 +169,29 @@ impl AtomicState {
     fn unborrowed() -> Self {
         Self {
             shared: AtomicUsize::new(0),
-            exclusive: AtomicBool::new(false),
-            holder: AtomicPtr::new(core::ptr::null_mut()),
+            writer: AtomicPtr::new(core::ptr::null_mut()),
         }
     }
 
-    /// The recorded holder, if any. Diagnostics only.
+    /// The address that stands for "a writer is holding the cell at `loc`".
+    fn writer_token(loc: &'static Location<'static>) -> *mut () {
+        core::ptr::from_ref::<Location<'static>>(loc)
+            .cast_mut()
+            .cast::<()>()
+    }
+
+    /// Decode a writer word that was read once, atomically, into a location.
     ///
-    /// It is written only by the writer path - [`try_exclusive`](State::try_exclusive)
-    /// sets it, [`end_exclusive`](State::end_exclusive) clears it - so it names
-    /// the writer, never a reader. A reader does not store its location: that
-    /// would be an atomic store on every read borrow, and it would race (last
-    /// writer wins), which is exactly the cost the two-flag protocol avoids.
-    /// The consequence is that a *readers* conflict on a `Shared` cell reports
-    /// its `count` but no holder, while the single-threaded cell can name the
-    /// first reader for free.
-    fn holder(&self) -> Option<&'static Location<'static>> {
-        let raw = self.holder.load(Ordering::Relaxed);
+    /// The word is loaded a single time and decoded from that value, so the
+    /// "is there a writer" test and the "where" answer come from the same read.
+    /// Two separate loads would open a window: a reader could observe a writer
+    /// and then, by the time it asked where, the writer had released.
+    fn location_of(raw: *mut ()) -> Option<&'static Location<'static>> {
         if raw.is_null() {
             return None;
         }
         // SAFETY: only `&'static Location<'static>` values are ever stored here.
         Some(unsafe { &*(raw as *const Location<'static>) })
-    }
-
-    fn set_holder(&self, holder: Option<&'static Location<'static>>) {
-        let raw = holder.map_or(core::ptr::null_mut(), |loc| {
-            core::ptr::from_ref::<Location<'static>>(loc)
-                .cast_mut()
-                .cast::<()>()
-        });
-        self.holder.store(raw, Ordering::Relaxed);
     }
 }
 
@@ -191,65 +207,71 @@ impl State for AtomicState {
     // `SeqCst` on every operation that participates in that handshake is what
     // makes it correct: it puts them in one total order, so reader and writer
     // cannot both conclude that they own the cell.
-    fn try_shared(&self, wanted: &'static Location<'static>) -> Result<(), Conflict> {
-        if self.exclusive.load(Ordering::SeqCst) {
+    fn try_shared(&self, wanted: &'static Location<'static>) -> Result<bool, Conflict> {
+        // One load, decoded from the value read, so the "is there a writer"
+        // answer and the location cannot disagree.
+        let seen = self.writer.load(Ordering::SeqCst);
+        if !seen.is_null() {
             return Err(Conflict::new(ConflictKind::Writer)
-                .with_holder(self.holder())
+                .with_holder(Self::location_of(seen))
                 .with_wanted(wanted));
         }
         self.shared.fetch_add(1, Ordering::SeqCst);
-        if self.exclusive.load(Ordering::SeqCst) {
+        let seen = self.writer.load(Ordering::SeqCst);
+        if !seen.is_null() {
             self.shared.fetch_sub(1, Ordering::SeqCst);
             return Err(Conflict::new(ConflictKind::Writer)
-                .with_holder(self.holder())
+                .with_holder(Self::location_of(seen))
                 .with_wanted(wanted));
         }
-        Ok(())
+        // A reader never records a holder on the atomic cell - the writer word
+        // names only writers - so there is nothing for it to clear on release.
+        Ok(false)
     }
 
     fn try_exclusive(&self, wanted: &'static Location<'static>) -> Result<(), Conflict> {
-        if self.exclusive.load(Ordering::SeqCst)
-            || self
-                .exclusive
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_err()
-        {
+        // Claim the cell *and* publish the location in one step, so a reader that
+        // sees the claim always sees the location with it. On failure the CAS
+        // hands back the value it saw, which is the competing writer's token -
+        // use that rather than a second load, so the conflict cannot observe a
+        // writer that has already released.
+        if let Err(seen) = self.writer.compare_exchange(
+            core::ptr::null_mut(),
+            Self::writer_token(wanted),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
             return Err(Conflict::new(ConflictKind::Writer)
-                .with_holder(self.holder())
+                .with_holder(Self::location_of(seen))
                 .with_wanted(wanted));
         }
         let readers = self.shared.load(Ordering::SeqCst);
         if readers > 0 {
-            self.exclusive.store(false, Ordering::SeqCst);
+            self.writer.store(core::ptr::null_mut(), Ordering::SeqCst);
             return Err(Conflict::new(ConflictKind::Readers)
                 .with_count(readers)
-                .with_holder(self.holder())
                 .with_wanted(wanted));
         }
-        self.set_holder(Some(wanted));
         Ok(())
     }
 
-    fn end_shared(&self) {
-        // No holder to clear. `holder` is written only after a writer wins the
-        // handshake, and a writer can only win while no reader is active - so
-        // while any reader is alive the holder is already absent, and clearing it
-        // here would be a `None`-to-`None` store on every shared release. It is
-        // also the store that used to run *only* when the last reader left, which
-        // is the same case: nothing to clear.
+    fn end_shared(&self, _recorder: bool) {
+        // No holder to clear: the writer side is a separate word, and a reader
+        // never touches it. Clearing it here would be the store that used to race
+        // a writer's own claim - see the loom test about a reader release erasing
+        // a writer's location.
         self.shared.fetch_sub(1, Ordering::Release);
     }
 
     fn end_exclusive(&self) {
-        self.set_holder(None);
-        self.exclusive.store(false, Ordering::Release);
+        self.writer.store(core::ptr::null_mut(), Ordering::Release);
     }
 
     fn add_shared(&self) {
-        // The caller already holds a shared borrow, which means the writer flag
-        // is clear and cannot become set while this count is non-zero. `SeqCst`
+        // The caller already holds a shared borrow, which means the writer word is
+        // null and cannot become non-null while this count is non-zero. `SeqCst`
         // matches the handshake in `try_shared` so the increment cannot be
-        // reordered against a writer's flag check.
+        // reordered against a writer's claim.
         self.shared.fetch_add(1, Ordering::SeqCst);
     }
 }

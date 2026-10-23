@@ -83,3 +83,57 @@ fn display_and_debug_carry_the_locations() {
     assert!(debug.contains("Conflict"));
     assert!(debug.contains("Readers"));
 }
+
+/// A released reader must not be blamed for a later conflict.
+///
+/// The single-threaded cell remembers one reader's location. If that reader goes
+/// while another is still alive, the holder must stop naming it - otherwise a
+/// refused write points at a borrow that is already gone. The cell does not
+/// track *every* reader's location (that would be O(borrows) of state), so the
+/// honest outcome is that the holder becomes unknown: the write is still
+/// correctly refused, and `count` still says how many readers block it.
+#[test]
+fn a_released_reader_is_not_blamed() {
+    let cell = Local::new(0u8);
+    let first = cell.borrow();
+    let first_line = line!() - 1;
+    let second = cell.borrow();
+
+    drop(first);
+    let conflict = cell.try_borrow_mut().unwrap_err();
+
+    assert_eq!(
+        conflict.count(),
+        Some(1),
+        "one reader still blocks the write"
+    );
+    if let Some(holder) = conflict.holder() {
+        assert_ne!(
+            holder.line(),
+            first_line,
+            "the conflict blamed reader A, which was already dropped"
+        );
+    }
+    drop(second);
+}
+
+/// The recorder flag must survive a clone: when the recording reader goes but a
+/// clone stays, the cell must stay borrowed and the holder must be cleared
+/// rather than left pointing at the dropped original.
+#[test]
+fn a_clone_keeps_the_borrow_and_clears_the_holder() {
+    let cell = Local::new(0u8);
+    let original = cell.borrow();
+    let clone = original.clone();
+    drop(original);
+
+    // Still borrowed by the clone, so the write is refused...
+    let conflict = cell.try_borrow_mut().unwrap_err();
+    assert_eq!(conflict.count(), Some(1));
+    assert!(
+        conflict.holder().is_none(),
+        "the dropped original should not be named as the holder"
+    );
+    drop(clone);
+    assert!(cell.try_borrow_mut().is_ok());
+}

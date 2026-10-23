@@ -365,6 +365,43 @@ fn a_refused_reader_does_not_wrap_the_count() {
     });
 }
 
+/// A reader that is refused by a writer must always be told *where* the writer
+/// is.
+///
+/// The writer used to claim the cell with a `compare_exchange` on a flag and
+/// then publish its location in a second store, so a reader that ran in between
+/// saw a claimed cell with no location. Folding the claim and the location into
+/// one compare-exchange on a single pointer removes that window: a reader either
+/// sees the null pointer (no writer) or the writer's location, never a claimed
+/// cell without a location.
+#[test]
+fn a_writer_conflict_always_carries_a_location() {
+    loom::model(|| {
+        let cell: Shared<u32> = lite::shared(0);
+        let writer = cell.clone();
+        let reader = cell.clone();
+
+        let a = thread::spawn(move || {
+            if let Ok(mut guard) = writer.try_borrow_mut() {
+                *guard += 1;
+            }
+        });
+
+        let b = thread::spawn(move || {
+            if let Err(conflict) = reader.try_borrow() {
+                assert_eq!(conflict.kind(), lite::ConflictKind::Writer);
+                assert!(
+                    conflict.holder().is_some(),
+                    "a writer conflict lost the writer's location"
+                );
+            }
+        });
+
+        a.join().unwrap();
+        b.join().unwrap();
+    });
+}
+
 /// A reader releasing its borrow must not erase a writer's location.
 ///
 /// `end_shared` used to be two operations: `fetch_sub` the reader count, and -

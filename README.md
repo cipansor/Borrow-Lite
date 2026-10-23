@@ -674,18 +674,27 @@ be a general `RwLock` replacement.
 Second, the one gap that looked closable was the `parking_lot` fast path: pack
 the reader count and the writer flag into one `AtomicUsize` so a
 reader-versus-writer decision is a single `compare_exchange`. That was built and
-measured rather than argued about, and **it lost**, so the two-flag protocol is
-still what ships. Single-threaded read went from 4.20 ns to 4.51 ns, write from
-3.56 ns to 4.35 ns, and the contended write benchmark was 7% to 21% slower at
-every thread count, on the same cell with the same retry.
+measured rather than argued about, and **it lost**, so readers and the writer
+still use two words. Single-threaded read went from 4.20 ns to 4.51 ns, write
+from 3.56 ns to 4.35 ns, and the contended write benchmark was 7% to 21% slower
+at every thread count, on the same cell with the same retry.
 
 The reason is that `parking_lot`'s design is not transplantable, because it does
 not carry the thing this crate exists to carry. `parking_lot` has no per-borrow
 location, so its fast path is one CAS and nothing else. `lite` records a
 holder `Location` to name the culprit, and a holder pointer is a second location
-- so the "one word" buys nothing while forcing a `cmpxchg` where the two-flag
-version's `fetch_add`/`fetch_sub` compile to a cheaper `lock xadd`, plus an extra
-store when a short borrow passes through zero.
+- so packing the *reader count* in too buys nothing while forcing a `cmpxchg`
+where the shipped version's `fetch_add`/`fetch_sub` compile to a cheaper
+`lock xadd`.
+
+What did ship is the same trick applied where it pays: the writer's *presence*
+and its *location* are one word, a single `AtomicPtr` that is null when no writer
+holds the cell and the writer's `Location` when one does. Claiming the cell and
+publishing the location are then the *same* compare-exchange, so a reader can
+never observe a claimed cell without a location - the window that a separate
+writer flag and holder pointer left open. Readers stay a plain `AtomicUsize`
+count, and a readers conflict reports its count rather than a location, because
+recording a reader's location would be an atomic store on every read.
 
 The single-word design did buy one real thing: it made reader-versus-writer
 exclusion *model-checkable*. The shipped protocol cannot be checked for that
@@ -695,8 +704,8 @@ does not model it. Both facts are recorded as tests in `tests/loom.rs` - one
 alarm) and passes on the single-word one. The trade was a measurable slowdown
 for a checkable proof, and the numbers said no.
 
-The same review that rejected the single word found a real bug in the two-flag
-protocol it kept. `end_shared` used to clear the writer's location once the
+The same review that rejected the single word found a real bug in the protocol
+it kept. `end_shared` used to clear the writer's location once the
 reader count reached zero - but reaching zero is exactly when a writer may win
 the handshake, so a writer could store its location between the decrement and the
 clear, and the clear would wipe it. The cell was held, yet a later conflict would
@@ -706,6 +715,21 @@ a writer wins, which requires the count to already be zero - so while any reader
 is alive there is nothing to clear. Removing it fixed the race and made the
 shared release path about 3% faster (`tests/loom.rs` pins the race; a stress loop
 does not, because the window is a few instructions wide).
+
+A later review of the same area found two more holes, both now closed:
+
+- **A `Sync` but `!Send` payload could cross threads.** `Inner`'s `Sync` impl
+  asked only for `T: Sync`, but sharing the cell also hands out `&mut T` through
+  `borrow_mut`/`with_mut`, and `&mut T` is enough to move or drop the value. A
+  `MutexGuard` - `Sync`, `!Send` - could therefore be swapped out and dropped on
+  another thread. The bound is now `T: Send + Sync`, checked by two
+  `compile_fail` doctests on `Shared` (one through the handle, one through the
+  `Deref` target).
+- **A writer conflict could lose the writer's location.** The writer flag and the
+  holder pointer were two locations: the flag was set first, then the location
+  published, so a reader in between saw a claimed cell with no location (and the
+  release path had the mirror gap). Folding presence and location into the one
+  `AtomicPtr` compare-exchange removes the window; `tests/loom.rs` now models it.
 
 ### When not to use `lite`
 

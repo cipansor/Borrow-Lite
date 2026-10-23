@@ -15,9 +15,9 @@ pub(crate) use alloc::rc::Rc;
 #[cfg(not(loom))]
 pub(crate) use alloc::sync::Arc;
 #[cfg(not(loom))]
-pub(crate) use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+pub(crate) use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 #[cfg(loom)]
 pub(crate) use loom::sync::Arc;
 #[cfg(loom)]
-pub(crate) use loom::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+pub(crate) use loom::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
