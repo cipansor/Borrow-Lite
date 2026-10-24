@@ -12,7 +12,8 @@
 //!   not a panic and not a second write;
 //! * an observer that removes itself is gone afterwards and does not fire
 //!   again;
-//! * an observer added during a notification does not fire until the next one.
+//! * an observer added during a notification does not fire until the next one;
+//! * `get` reads without notifying, and `set` notifies exactly once like `update`.
 //!
 //! # What is deliberately not here
 //!
@@ -30,8 +31,11 @@
 //! Run with:
 //!
 //! ```text
-//! cargo +nightly fuzz run observers
+//! cargo +nightly fuzz run observers fuzz/corpus/observers fuzz/seeds/observers
 //! ```
+//!
+//! `fuzz/seeds/observers` is tracked and read as the starting corpus, and is
+//! where a once-failing input is kept as a regression file.
 
 #![no_main]
 
@@ -61,7 +65,7 @@ fuzz_target!(|data: &[u8]| {
     let mut live: Vec<Live> = Vec::new();
 
     for pair in data.chunks(2) {
-        let op = pair[0] % 11;
+        let op = pair[0] % 13;
         let arg = pair.get(1).copied().unwrap_or(0);
 
         match op {
@@ -299,7 +303,7 @@ fuzz_target!(|data: &[u8]| {
             }
 
             // An observer that re-enters `update`; that must be refused.
-            _ => {
+            10 => {
                 let handle = cell.clone();
                 let id = cell.observe(move |_| {
                     assert!(
@@ -318,6 +322,48 @@ fuzz_target!(|data: &[u8]| {
                     "a refused re-entrant update still wrote the value"
                 );
                 let _ = cell.unobserve(id);
+            }
+
+            // `get` is the closure-free read, and it must not notify: reading
+            // is not a change, so no observer may fire.
+            11 => {
+                let before = cell.get();
+                let counts: Vec<usize> = live
+                    .iter()
+                    .map(|o| o.count.load(Ordering::SeqCst))
+                    .collect();
+                assert_eq!(cell.get(), before, "get returned a different value");
+                for (index, observer) in live.iter().enumerate() {
+                    assert_eq!(
+                        observer.count.load(Ordering::SeqCst),
+                        counts[index],
+                        "a read notified observer {index}"
+                    );
+                }
+            }
+
+            // `set` is the closure-free write, and it must notify exactly once,
+            // like `update`. `get` then sees the new value.
+            _ => {
+                let counts: Vec<usize> = live
+                    .iter()
+                    .map(|o| o.count.load(Ordering::SeqCst))
+                    .collect();
+                let new = cell.get().wrapping_add(arg as u64);
+                cell.set(new);
+                assert_eq!(cell.get(), new, "set did not store the value");
+                for (index, observer) in live.iter().enumerate() {
+                    assert_eq!(
+                        observer.count.load(Ordering::SeqCst),
+                        counts[index] + 1,
+                        "observer {index} missed a set notification"
+                    );
+                }
+                assert_eq!(
+                    cell.observer_count(),
+                    live.len(),
+                    "set changed the observer list"
+                );
             }
         }
     }

@@ -112,9 +112,14 @@ jobs:
           RUSTFLAGS: --cfg loom
           LOOM_MAX_PREEMPTIONS: 3
 
-  # The fuzz target replays operation scripts against a shadow model. A fixed
-  # budget on every push keeps it honest; the crash regression files, if any,
-  # are replayed first.
+  # The fuzz targets replay operation scripts against a shadow model. A fixed
+  # budget on every push keeps it honest. Two corpus dirs are passed: the first
+  # is where libfuzzer *writes* new finds, and `fuzz/corpus` is ignored so it
+  # never dirties the tree; the second is `fuzz/seeds/<target>`, which is tracked
+  # and *read* as the starting corpus. The seed dir doubles as the
+  # crash-regression set - a file that once failed is dropped in there and
+  # replayed on every push. (One dir would not do: libfuzzer would then write its
+  # thousands of finds straight into the tracked seed dir.)
   fuzz:
     runs-on: ubuntu-latest
     steps:
@@ -122,8 +127,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo install cargo-fuzz --locked
-      - run: cargo fuzz run borrow_ops -- -max_total_time=120
-      - run: cargo fuzz run observers -- -max_total_time=120
+      - run: mkdir -p fuzz/corpus/borrow_ops && cargo fuzz run borrow_ops fuzz/corpus/borrow_ops fuzz/seeds/borrow_ops -- -max_total_time=120
+      - run: mkdir -p fuzz/corpus/observers && cargo fuzz run observers fuzz/corpus/observers fuzz/seeds/observers -- -max_total_time=120
 
   # `cargo package` is the closest local check to `cargo publish`: it builds the
   # exact file set a user would download, in a fresh directory, with the

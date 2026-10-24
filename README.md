@@ -1240,9 +1240,17 @@ MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-many-seeds=0..16" cargo +nightly miri
 LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --test loom --release
 
 # Fuzzing: operation scripts replayed against a shadow model
-cargo +nightly fuzz run borrow_ops
-cargo +nightly fuzz run observers
+cargo +nightly fuzz run borrow_ops fuzz/corpus/borrow_ops fuzz/seeds/borrow_ops
+cargo +nightly fuzz run observers fuzz/corpus/observers fuzz/seeds/observers
 ```
+
+The two corpus directories are deliberate. `fuzz/seeds/<target>` is tracked and
+read as the starting corpus, and doubles as the crash-regression set: a file that
+once made a target fail is dropped in there and replayed on every run. The first
+directory is where libfuzzer *writes* what it finds; `fuzz/corpus` is ignored, so
+those thousands of files never reach the tree. Pass only one directory and
+libfuzzer writes its finds into that one - straight into the tracked seeds if
+that is the one you passed.
 
 Loom is worth a note, because the obvious test does not work. The handshake in
 `AtomicState` is Dekker-style and rests on `SeqCst` being a single total order

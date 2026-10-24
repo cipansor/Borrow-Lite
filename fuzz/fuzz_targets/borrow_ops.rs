@@ -19,8 +19,11 @@
 //! Run with:
 //!
 //! ```text
-//! cargo +nightly fuzz run borrow_ops
+//! cargo +nightly fuzz run borrow_ops fuzz/corpus/borrow_ops fuzz/seeds/borrow_ops
 //! ```
+//!
+//! `fuzz/seeds/borrow_ops` is tracked and read as the starting corpus, and is
+//! where a once-failing input is kept as a regression file.
 
 #![no_main]
 
@@ -41,10 +44,12 @@ enum Op {
     Order,
     Swap,
     ReplaceWith,
+    Get,
+    Set,
 }
 
 fn decode(byte: u8) -> Op {
-    match byte % 11 {
+    match byte % 13 {
         0 => Op::TryRead,
         1 => Op::TryWrite,
         2 => Op::HoldRead,
@@ -55,7 +60,9 @@ fn decode(byte: u8) -> Op {
         7 => Op::Compare,
         8 => Op::Order,
         9 => Op::Swap,
-        _ => Op::ReplaceWith,
+        10 => Op::ReplaceWith,
+        11 => Op::Get,
+        _ => Op::Set,
     }
 }
 
@@ -329,7 +336,42 @@ macro_rules! run_script {
                             }
                         }
                     }
-                }
+                },
+
+                // `get` is the closure-free read: it needs a shared borrow, so
+                // it agrees with the oracle's readability and must return the
+                // oracle's value. `try_get` is the same check without the panic.
+                Op::Get => match cell.try_get() {
+                    Ok(value) => {
+                        assert!(model.can_read(), "{label}: get granted, model says no");
+                        assert_eq!(value, model.value, "{label}: get read the wrong value");
+                    }
+                    Err(conflict) => {
+                        assert!(!model.can_read(), "{label}: get refused, model says yes");
+                        assert_eq!(conflict.kind(), ConflictKind::Writer);
+                    }
+                },
+
+                // `set` is the closure-free write. The panicking form is only
+                // called when the oracle allows a write; when it does not, the
+                // refusable form must refuse *and hand the value back*, so a
+                // refused write loses nothing.
+                Op::Set => {
+                    let new = model.value.wrapping_add(1);
+                    if model.can_write() {
+                        cell.set(new);
+                        assert_eq!(cell.try_get().unwrap(), new, "{label}: set stored the wrong value");
+                        model.value = new;
+                    } else {
+                        match cell.try_set(new) {
+                            Ok(()) => panic!("{label}: set was allowed, model says no"),
+                            Err((conflict, value)) => {
+                                assert_eq!(conflict.kind(), model.blame());
+                                assert_eq!(value, new, "{label}: try_set did not hand the value back");
+                            }
+                        }
+                    }
+                },
             }
         }
 
