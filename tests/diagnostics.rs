@@ -137,3 +137,75 @@ fn a_clone_keeps_the_borrow_and_clears_the_holder() {
     drop(clone);
     assert!(cell.try_borrow_mut().is_ok());
 }
+
+/// The recorder flag must survive `ReadGuard::map` too.
+///
+/// `map` consumes the guard and rebuilds it around the narrowed pointer, so the
+/// recorder flag has to be carried across by hand - and if it is dropped, the
+/// mapped guard becomes a reader that will not clear the holder it recorded.
+/// With a second reader alive the last-reader safety net does not fire, so a
+/// later refused write names a borrow that has already been dropped. This is the
+/// `map`-shaped twin of `a_released_reader_is_not_blamed`, and it is the only
+/// test that fails if `map` forgets the flag.
+#[test]
+fn a_mapped_recorder_clears_the_holder_it_recorded() {
+    use lite::ReadGuard;
+
+    let cell = Local::new((1u32, 2u32));
+
+    // The borrow records the holder; `map` must carry that responsibility
+    // across to the guard it rebuilds.
+    let mapped = ReadGuard::map(cell.borrow(), |t| &t.0);
+
+    // A second reader: shared == 2, so when `mapped` drops the count does not
+    // reach zero and the safety net does not clear the holder for it.
+    let other = cell.borrow();
+    drop(mapped);
+
+    let conflict = cell.try_borrow_mut().unwrap_err();
+    assert_eq!(
+        conflict.count(),
+        Some(1),
+        "one reader still blocks the write"
+    );
+    assert_eq!(
+        conflict.holder().map(|h| h.line()),
+        None,
+        "the conflict blamed the mapped reader that was already dropped"
+    );
+    drop(other);
+    assert!(cell.try_borrow_mut().is_ok(), "the borrow leaked");
+}
+
+/// The mirror of `a_clone_keeps_the_borrow_and_clears_the_holder`: when the
+/// *clone* goes and the recording reader stays, the holder must still name that
+/// live reader.
+///
+/// A clone that wrongly claims the recorder flag clears the holder as it drops,
+/// so a later refused write reports no holder at all even though the borrow it
+/// should blame is still alive. Only the borrow that recorded the holder may
+/// clear it, and this pins the other direction from the existing test.
+#[test]
+fn a_dropped_clone_does_not_clear_a_live_recorders_holder() {
+    let cell = Local::new(0u8);
+    let original = cell.borrow();
+    let original_line = line!() - 1;
+    let clone = original.clone();
+
+    // The clone - not the recorder - is the one that goes.
+    drop(clone);
+
+    let conflict = cell.try_borrow_mut().unwrap_err();
+    assert_eq!(
+        conflict.count(),
+        Some(1),
+        "one reader still blocks the write"
+    );
+    assert_eq!(
+        conflict.holder().map(|h| h.line()),
+        Some(original_line),
+        "the live recording reader should still be named as the holder"
+    );
+    drop(original);
+    assert!(cell.try_borrow_mut().is_ok(), "the borrow leaked");
+}

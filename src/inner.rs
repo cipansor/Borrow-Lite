@@ -433,9 +433,11 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     ///
     /// Swapping a cell with itself reports a
     /// [`Writer`](crate::ConflictKind::Writer) conflict: the first borrow is
-    /// exclusive, so the second could never be granted. The reported
-    /// [`wanted`](Conflict::wanted) location is this call, not a line inside
-    /// lite.
+    /// exclusive, so the second could never be granted. It is detected before
+    /// either borrow is attempted, so the reported
+    /// [`wanted`](Conflict::wanted) location is this call - not a line inside
+    /// lite - and there is no [`holder`](Conflict::holder), because no borrow
+    /// was actually in the way.
     ///
     /// # Errors
     ///

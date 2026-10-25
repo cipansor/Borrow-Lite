@@ -113,6 +113,29 @@ const _: () = {
     assert!(core::mem::size_of::<Local<u64>>() == core::mem::size_of::<*const u64>());
 };
 
+/// The exact byte counts the README quotes, pinned so they cannot drift.
+///
+/// These are the numbers `examples/sizes.rs` prints and the README repeats
+/// ("`Inline<u64>` is 32 bytes against `RefCell<u64>`'s 16"), and a printed
+/// number cannot fail a build - if `LocalState` grows a field the cell would
+/// get wider and the prose would quietly become wrong. A `const` assertion
+/// turns that into a compile error.
+///
+/// They are 64-bit layout facts rather than portable guarantees, so they are
+/// gated on the pointer width; the guard sizes depend on the handle, the raw
+/// pointer and the recorder flag, which is what makes a `ReadGuard` wider than
+/// a `WriteGuard`.
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    use lite::Inline;
+    use lite::state::LocalState;
+
+    assert!(core::mem::size_of::<Inline<u64>>() == 32);
+    assert!(core::mem::size_of::<std::cell::RefCell<u64>>() == 16);
+    assert!(core::mem::size_of::<lite::ReadGuard<'static, u64, LocalState>>() == 24);
+    assert!(core::mem::size_of::<lite::WriteGuard<'static, u64, LocalState>>() == 16);
+};
+
 /// The regression for the bug this file found: a panicking observer used to
 /// drop the *rest* of the notification round, silently losing every observer
 /// that had not run yet.

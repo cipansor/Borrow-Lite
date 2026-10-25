@@ -1091,6 +1091,10 @@ mod holder_locations {
         let conflict = a.try_swap(&a).unwrap_err();
         assert_eq!(conflict.kind(), ConflictKind::Writer);
         assert_eq!(conflict.wanted().map(|l| l.file()), Some(file!()));
+        // Detected before either borrow is attempted, so the conflict names no
+        // holder - otherwise it would blame the caller's own line as the
+        // "borrow in the way", which is confusing rather than helpful.
+        assert_eq!(conflict.holder(), None, "a self-swap named a holder");
         // The self-swap through clones is the same cell, so also refused.
         let alias = a.clone();
         assert!(a.try_swap(&alias).is_err());

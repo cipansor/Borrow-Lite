@@ -303,4 +303,5 @@ fn swap_and_replace_with_match_refcell() {
     let self_conflict = a.try_swap(&a).unwrap_err();
     assert_eq!(self_conflict.kind(), ConflictKind::Writer);
     assert_eq!(self_conflict.wanted().map(|l| l.file()), Some(file!()));
+    assert_eq!(self_conflict.holder(), None, "a self-swap named a holder");
 }
