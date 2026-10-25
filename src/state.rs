@@ -106,14 +106,19 @@ impl State for LocalState {
     }
 
     fn try_exclusive(&self, wanted: &'static Location<'static>) -> Result<(), Conflict> {
+        if self.exclusive.get() {
+            // A writer conflict has nothing to count: `shared` is necessarily
+            // zero while the cell is exclusively borrowed, so attaching it would
+            // report "0 active borrows" about a cell that is very much borrowed.
+            // Leave the count unset, matching the atomic cell and the documented
+            // contract.
+            return Err(Conflict::new(ConflictKind::Writer)
+                .with_holder(self.holder.get())
+                .with_wanted(wanted));
+        }
         let readers = self.shared.get();
-        if self.exclusive.get() || readers > 0 {
-            let kind = if self.exclusive.get() {
-                ConflictKind::Writer
-            } else {
-                ConflictKind::Readers
-            };
-            return Err(Conflict::new(kind)
+        if readers > 0 {
+            return Err(Conflict::new(ConflictKind::Readers)
                 .with_count(readers)
                 .with_holder(self.holder.get())
                 .with_wanted(wanted));

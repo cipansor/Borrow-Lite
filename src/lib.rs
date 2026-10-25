@@ -24,7 +24,7 @@
 //!
 //! | Problem | lite |
 //! |---|---|
-//! | `RefCell::borrow_mut()` panics with `already borrowed: BorrowMutError`, which names neither the culprit nor the victim | the panic message carries the *source location* of both the borrow that is in the way and the borrow that was refused, plus how many borrows are active |
+//! | `RefCell::borrow_mut()` panics with `already borrowed: BorrowMutError`, which names neither the culprit nor the victim | the panic message carries the *source location* of both the borrow that is in the way and the borrow that was refused, plus how many borrows are active when readers are what is in the way |
 //! | `RwLock` blocks forever, or poisons, when the same thread re-enters | every borrow has a `try_` twin, and [`Conflict`] is a plain `Error` you can `?` on, so a conflict is a recoverable error instead of a deadlock |
 //! | guards leak into long scopes, so the next borrow panics far away from the cause | [`with`](Inner::with) / [`with_mut`](Inner::with_mut) run a closure and release the borrow before returning |
 //!

@@ -109,6 +109,14 @@ impl Conflict {
     }
 
     /// Number of active borrows of [`kind`](Self::kind), if the mode counts them.
+    ///
+    /// A count is reported only when *readers* are what is in the way. A
+    /// [`Writer`](ConflictKind::Writer) conflict - a borrow refused because an
+    /// exclusive borrow is live, whether the refused borrow was a read or a
+    /// write - is never counted: the reader count is necessarily zero at that
+    /// moment, so reporting it would say "0 active borrows" about a cell that is
+    /// very much borrowed. Those conflicts are told apart by
+    /// [`holder`](Self::holder) instead, which names the writer.
     #[must_use]
     pub const fn count(self) -> Option<usize> {
         self.count

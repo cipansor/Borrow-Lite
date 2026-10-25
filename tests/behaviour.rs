@@ -170,6 +170,62 @@ fn count_is_none_for_a_writer_conflict_on_a_shared_cell() {
     assert_eq!(conflict.count(), None);
 }
 
+/// A writer refused *by another writer* must not report a reader count.
+///
+/// The single-threaded `try_exclusive` used to attach `with_count(readers)`
+/// unconditionally, and `readers` is necessarily zero while the cell is
+/// exclusively borrowed - so a write-vs-write conflict came back as
+/// `Some(0)`, and the panic said "(0 active borrows)" about a cell that was
+/// very much borrowed. The `try_borrow` path above never hit it, because it
+/// goes through `try_shared`, which builds its own conflict. Pin the
+/// write-vs-write path on both cells, and pin the message too.
+#[test]
+fn a_writer_refused_by_a_writer_does_not_report_a_zero_count() {
+    for (label, conflict, message) in [
+        {
+            let cell = Local::new(0u8);
+            let _guard = cell.borrow_mut();
+            let conflict = cell.try_borrow_mut().unwrap_err();
+            ("local", conflict, panic_message(&cell))
+        },
+        {
+            let cell = shared(0u8);
+            let _guard = cell.borrow_mut();
+            let conflict = cell.try_borrow_mut().unwrap_err();
+            ("shared", conflict, panic_message(&cell))
+        },
+    ] {
+        assert_eq!(conflict.kind(), ConflictKind::Writer, "{label}");
+        assert_eq!(
+            conflict.count(),
+            None,
+            "{label}: a write-vs-write conflict must not report a count"
+        );
+        assert!(
+            !message.contains("0 active borrows"),
+            "{label}: the message lied about the count: {message}"
+        );
+        assert!(
+            message.contains("held at"),
+            "{label}: the writer should still be named: {message}"
+        );
+    }
+}
+
+/// Run `cell.borrow_mut()` under a live write borrow and return the panic
+/// message. Used to assert on what a user actually sees.
+fn panic_message<S: lite::state::State, T: ?Sized>(cell: &lite::Inner<T, S>) -> String {
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = cell.borrow_mut();
+    }))
+    .expect_err("the borrow must be refused");
+    panic
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_string()))
+        .unwrap_or_default()
+}
+
 /// `replace` takes a write borrow, so it must report a conflict like any other
 /// write rather than panicking or writing anyway. It was only ever tested on an
 /// idle cell.

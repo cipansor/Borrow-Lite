@@ -9,6 +9,10 @@
 //! * a read succeeds exactly when the oracle has no writer;
 //! * a write succeeds exactly when the oracle has no reader and no writer;
 //! * a refused borrow blames the right thing (`Writer` vs `Readers`);
+//! * a refused borrow reports the right `count` - the number of readers when
+//!   readers are what is in the way, and `None` when a writer is (the reader
+//!   count is necessarily zero then, and reporting it would claim "0 active
+//!   borrows" about a cell that is borrowed);
 //! * the value read back is the value the oracle holds;
 //! * the closure forms release their borrow, and a held guard's drop releases
 //!   its share, so the cell is never left permanently borrowed.
@@ -27,8 +31,8 @@
 
 #![no_main]
 
-use lite::{local, shared, ConflictKind, ReadGuard, WriteGuard};
 use libfuzzer_sys::fuzz_target;
+use lite::{ConflictKind, ReadGuard, WriteGuard, local, shared};
 
 /// One scripted operation, decoded from a byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +98,24 @@ impl Model {
             ConflictKind::Readers
         }
     }
+
+    /// The reader count a refusal must report, or `None` when it must not be
+    /// counted at all.
+    ///
+    /// A conflict is counted only when readers are what is in the way. When the
+    /// writer is what blocks - so the refusal is blamed on a
+    /// [`Writer`](ConflictKind::Writer) - the reader count is necessarily zero
+    /// and reporting it would claim "0 active borrows" about a cell that is
+    /// borrowed. This is the oracle the `count` field was missing: the fuzzer
+    /// checked `kind()` but never `count()`, which is how a writer-vs-writer
+    /// conflict reporting `Some(0)` slipped through.
+    fn expected_count(&self) -> Option<usize> {
+        if self.writer {
+            None
+        } else {
+            Some(self.readers)
+        }
+    }
 }
 
 /// Shared body for both cell types. `$cell` is a `Local<u64>` or `Shared<u64>`;
@@ -127,6 +149,11 @@ macro_rules! run_script {
                             ConflictKind::Writer,
                             "{label}: a refused read must blame a writer"
                         );
+                        assert_eq!(
+                            conflict.count(),
+                            None,
+                            "{label}: a refused read must blame a writer"
+                        );
                     }
                 },
 
@@ -145,33 +172,63 @@ macro_rules! run_script {
                             model.blame(),
                             "{label}: wrong blame at op {index}"
                         );
+                        assert_eq!(
+                            conflict.count(),
+                            model.expected_count(),
+                            "{label}: wrong blame at op {index}"
+                        );
                     }
                 },
 
                 Op::HoldRead => match cell.try_borrow() {
                     Ok(guard) => {
-                        assert!(model.can_read(), "{label}: held read granted, model says no");
-                        assert_eq!(*guard, model.value, "{label}: held read saw the wrong value");
+                        assert!(
+                            model.can_read(),
+                            "{label}: held read granted, model says no"
+                        );
+                        assert_eq!(
+                            *guard, model.value,
+                            "{label}: held read saw the wrong value"
+                        );
                         model.readers += 1;
                         held_reads.push(guard);
                     }
                     Err(conflict) => {
-                        assert!(!model.can_read(), "{label}: held read refused, model says yes");
+                        assert!(
+                            !model.can_read(),
+                            "{label}: held read refused, model says yes"
+                        );
                         assert_eq!(conflict.kind(), ConflictKind::Writer);
+                        assert_eq!(
+                            conflict.count(),
+                            None,
+                            "{label}: a writer conflict must not be counted"
+                        );
                     }
                 },
 
                 Op::HoldWrite => match cell.try_borrow_mut() {
                     Ok(mut guard) => {
-                        assert!(model.can_write(), "{label}: held write granted, model says no");
+                        assert!(
+                            model.can_write(),
+                            "{label}: held write granted, model says no"
+                        );
                         *guard += 1;
                         model.writer = true;
                         model.value = model.value.wrapping_add(1);
                         held_writes.push(guard);
                     }
                     Err(conflict) => {
-                        assert!(!model.can_write(), "{label}: held write refused, model says yes");
+                        assert!(
+                            !model.can_write(),
+                            "{label}: held write refused, model says yes"
+                        );
                         assert_eq!(conflict.kind(), model.blame());
+                        assert_eq!(
+                            conflict.count(),
+                            model.expected_count(),
+                            "{label}: a refusal reported the wrong count"
+                        );
                     }
                 },
 
@@ -193,10 +250,16 @@ macro_rules! run_script {
                 Op::Replace => {
                     if model.can_write() {
                         let taken = cell.replace(0);
-                        assert_eq!(taken, model.value, "{label}: replace returned the wrong value");
+                        assert_eq!(
+                            taken, model.value,
+                            "{label}: replace returned the wrong value"
+                        );
                         model.value = 0;
                     } else {
-                        assert!(cell.try_with_mut(|_| ()).is_err(), "{label}: replace would panic");
+                        assert!(
+                            cell.try_with_mut(|_| ()).is_err(),
+                            "{label}: replace would panic"
+                        );
                     }
                 }
 
@@ -234,8 +297,16 @@ macro_rules! run_script {
                             );
                         }
                         Err(conflict) => {
-                            assert!(!model.can_read(), "{label}: compare refused, model says yes");
+                            assert!(
+                                !model.can_read(),
+                                "{label}: compare refused, model says yes"
+                            );
                             assert_eq!(conflict.kind(), ConflictKind::Writer);
+                            assert_eq!(
+                                conflict.count(),
+                                None,
+                                "{label}: a writer conflict must not be counted"
+                            );
                         }
                     }
                 }
@@ -248,7 +319,10 @@ macro_rules! run_script {
                         assert_eq!(back, 0, "{label}: the second replace was wrong");
                         model.value = taken;
                     } else {
-                        assert!(cell.try_with_mut(|_| ()).is_err(), "{label}: replace would panic");
+                        assert!(
+                            cell.try_with_mut(|_| ()).is_err(),
+                            "{label}: replace would panic"
+                        );
                     }
                 }
 
@@ -298,6 +372,11 @@ macro_rules! run_script {
                         Err(conflict) => {
                             assert!(!model.can_read(), "{label}: order refused, model says yes");
                             assert_eq!(conflict.kind(), ConflictKind::Writer);
+                            assert_eq!(
+                                conflict.count(),
+                                None,
+                                "{label}: a writer conflict must not be counted"
+                            );
                         }
                     }
                 }
@@ -314,6 +393,11 @@ macro_rules! run_script {
                     Err(conflict) => {
                         assert!(!model.can_write(), "{label}: swap refused, model says yes");
                         assert_eq!(conflict.kind(), model.blame());
+                        assert_eq!(
+                            conflict.count(),
+                            model.expected_count(),
+                            "{label}: a refusal reported the wrong count"
+                        );
                     }
                 },
 
@@ -323,20 +407,28 @@ macro_rules! run_script {
                 Op::ReplaceWith => {
                     if model.can_write() {
                         let old = cell.replace_with(|v| v.wrapping_add(7));
-                        assert_eq!(old, model.value, "{label}: replace_with returned the wrong value");
+                        assert_eq!(
+                            old, model.value,
+                            "{label}: replace_with returned the wrong value"
+                        );
                         model.value = model.value.wrapping_add(7);
                     } else {
                         match cell.try_replace_with(|v| v.wrapping_add(7)) {
                             Ok(_) => panic!("{label}: replace_with was allowed, model says no"),
                             Err((conflict, f)) => {
                                 assert_eq!(conflict.kind(), model.blame());
+                                assert_eq!(
+                                    conflict.count(),
+                                    model.expected_count(),
+                                    "{label}: a refusal reported the wrong count"
+                                );
                                 // The refused closure is usable; do not run it
                                 // (the model forbids the write), just drop it.
                                 let _ = f;
                             }
                         }
                     }
-                },
+                }
 
                 // `get` is the closure-free read: it needs a shared borrow, so
                 // it agrees with the oracle's readability and must return the
@@ -349,6 +441,11 @@ macro_rules! run_script {
                     Err(conflict) => {
                         assert!(!model.can_read(), "{label}: get refused, model says yes");
                         assert_eq!(conflict.kind(), ConflictKind::Writer);
+                        assert_eq!(
+                            conflict.count(),
+                            None,
+                            "{label}: a writer conflict must not be counted"
+                        );
                     }
                 },
 
@@ -360,18 +457,30 @@ macro_rules! run_script {
                     let new = model.value.wrapping_add(1);
                     if model.can_write() {
                         cell.set(new);
-                        assert_eq!(cell.try_get().unwrap(), new, "{label}: set stored the wrong value");
+                        assert_eq!(
+                            cell.try_get().unwrap(),
+                            new,
+                            "{label}: set stored the wrong value"
+                        );
                         model.value = new;
                     } else {
                         match cell.try_set(new) {
                             Ok(()) => panic!("{label}: set was allowed, model says no"),
                             Err((conflict, value)) => {
                                 assert_eq!(conflict.kind(), model.blame());
-                                assert_eq!(value, new, "{label}: try_set did not hand the value back");
+                                assert_eq!(
+                                    conflict.count(),
+                                    model.expected_count(),
+                                    "{label}: a refusal reported the wrong count"
+                                );
+                                assert_eq!(
+                                    value, new,
+                                    "{label}: try_set did not hand the value back"
+                                );
                             }
                         }
                     }
-                },
+                }
             }
         }
 

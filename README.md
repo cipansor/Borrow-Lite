@@ -250,6 +250,24 @@ stats.borrow_mut().push(4);
 //     so it cannot leak.
 ```
 
+The count is printed only when readers are what is in the way. A writer
+conflict - a borrow refused because an exclusive borrow is live, whether the
+refused borrow was a read or a write - names the writer's location instead,
+because the reader count is necessarily zero at that moment and printing it
+would claim `0 active borrows` about a cell that is very much borrowed:
+
+```rust,should_panic
+use lite::Local;
+
+let stats = Local::new(vec![1, 2, 3]);
+let guard = stats.borrow_mut();
+stats.borrow_mut().push(4);
+// panicked at lite: cell is already mutably borrowed
+//   (borrow attempted at src/main.rs:5:7)
+//   ; held at src/main.rs:4:15 - a borrow is still alive...
+# let _ = guard;
+```
+
 ### 2. Conflicts are errors, not panics or deadlocks
 
 Every borrowing method has a `try_` twin - including `replace` and `take`,
