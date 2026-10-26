@@ -13,7 +13,7 @@ easy it is to write code that never hits it.
 
 ## The three shapes
 
-| Shape | std | borrow_lite |
+| Shape | std | `borrow_lite` |
 |---|---|---|
 | one owner, value stored inline | `RefCell<T>` | `Inline<T>` |
 | shared + mutable, one thread | `Rc<RefCell<T>>` | `Local<T>` |
@@ -419,7 +419,7 @@ short-circuits on the pointer and never borrows, so `cell == cell` never panics.
 One difference from `Rc`/`Arc` is worth naming: they run that short-circuit only
 when `T: Eq` (they specialise on `Eq`, because "a `PartialEq` might be
 deliberately irreflexive"), so `Rc<RefCell<f64>>` compared with itself still
-borrows. borrow_lite short-circuits for every `T: PartialEq`, so a `Local<f64>`
+borrows. `borrow_lite` short-circuits for every `T: PartialEq`, so a `Local<f64>`
 holding `NaN` is equal to itself where the `Rc` would not be. That is the only
 observable divergence, and a test pins it.
 When you cannot afford the panic, `try_eq` is the twin that returns the conflict:
@@ -1044,11 +1044,11 @@ cost is not the cell; it is that every reader writes to a shared cache line.
 `borrow_lite` still wins on this workload, but the margin is thinner than it
 looks: 1.2x at four threads and 1.06x at eight, not the 1.3x to 1.8x an earlier
 version of this table claimed. The eight-thread row is the worst in the file for
-reproducibility - borrow_lite measured 152 ms, 159 ms and 152 ms on three runs,
+reproducibility - `borrow_lite` measured 152 ms, 159 ms and 152 ms on three runs,
 and `RwLock` 162 ms, 157 ms and 184 ms - because eight threads on four cores are
 oversubscribed and the median depends on how the scheduler happened to interleave
 them. Trust the shape (both cells are hundreds of times slower than no checking,
-and borrow_lite is not the loser), not the last digit. It wins because
+and `borrow_lite` is not the loser), not the last digit. It wins because
 `AtomicState::try_shared` is one `fetch_add` and one load, while `RwLock` has to
 do its own atomic work and touch its futex state. Both are paying the same
 price for the same reason: the counter that records "someone is reading" is
@@ -1276,7 +1276,7 @@ over all locations. Loom does not model that - its README says `SeqCst` accesses
 "are regarded as `AcqRel` ... causing Loom to generate false alarms". A loom test
 that asserts "a reader and a writer are never both inside the cell" therefore
 fails on this protocol, and it fails for a standalone copy of the same handshake
-with no borrow_lite code in it at all, which is how the cause was pinned down.
+with no `borrow_lite` code in it at all, which is how the cause was pinned down.
 
 So `tests/loom.rs` checks the parts that do not need a global order - release
 frees the cell, readers do not conflict, two writers never lose an update,
