@@ -144,8 +144,24 @@ macro_rules! with_mut {
 /// assert_eq!((*stats.count(), stats.name().len()), (1, 3));
 /// ```
 ///
-/// The getter is named after the field; the setter name is spelled out, because
-/// a declarative macro cannot build an identifier like `count_mut` from `count`.
+/// The getter is always named after the field. The setter name is optional: if
+/// it is left off, the setter is `<field>_mut`.
+///
+/// ```ignore
+/// cell! {
+///     shared Counter, CounterData {
+///         count: u64,   // setter is `count_mut`, derived from the field name
+///     }
+/// }
+/// ```
+///
+/// Deriving the name needs the `paste` feature, because a declarative macro
+/// cannot build an identifier like `count_mut` from `count` on its own - so the
+/// example above is `ignore`d rather than run, and the derived form is covered
+/// by a test that is gated on the feature. With `paste` off the derived form is
+/// a compile error that names the feature, and the explicit `field => setter`
+/// form below is the one to use. Spelling the setter out always works, with or
+/// without the feature.
 ///
 /// The keyword chooses the cell, so all three shapes work: `inline` (no
 /// allocation, `Send`), `local` (single-threaded, shared by `Rc`), `shared`
@@ -203,6 +219,7 @@ macro_rules! with_mut {
 /// ```
 #[macro_export]
 macro_rules! cell {
+    // Explicit setter names, for the three cell kinds. These need no `paste`.
     ($(#[$meta:meta])* local $name:ident, $data:ident {
         $($(#[$fmeta:meta])* $field:ident : $ty:ty => $set:ident),* $(,)?
     }) => {
@@ -217,6 +234,32 @@ macro_rules! cell {
         $($(#[$fmeta:meta])* $field:ident : $ty:ty => $set:ident),* $(,)?
     }) => {
         $crate::cell!(@make $(#[$meta])* Inline, inline, $name, $data, $($(#[$fmeta])* $field : $ty => $set),*);
+    };
+    // Derived setter names (`field` -> `field_mut`), one arm per cell kind. The
+    // `=>` is absent, so these only match when every field omitted its setter.
+    // They are gated on `paste`; without it, expansion fails to find the
+    // re-export and the error points at the feature.
+    ($(#[$meta:meta])* local $name:ident, $data:ident {
+        $($(#[$fmeta:meta])* $field:ident : $ty:ty),* $(,)?
+    }) => {
+        $crate::cell!(@make_derived $(#[$meta])* Local, local, $name, $data, $($(#[$fmeta])* $field : $ty),*);
+    };
+    ($(#[$meta:meta])* shared $name:ident, $data:ident {
+        $($(#[$fmeta:meta])* $field:ident : $ty:ty),* $(,)?
+    }) => {
+        $crate::cell!(@make_derived $(#[$meta])* Shared, shared, $name, $data, $($(#[$fmeta])* $field : $ty),*);
+    };
+    ($(#[$meta:meta])* inline $name:ident, $data:ident {
+        $($(#[$fmeta:meta])* $field:ident : $ty:ty),* $(,)?
+    }) => {
+        $crate::cell!(@make_derived $(#[$meta])* Inline, inline, $name, $data, $($(#[$fmeta])* $field : $ty),*);
+    };
+    (@make_derived $(#[$meta:meta])* $kind:ident, $ctor:ident, $name:ident, $data:ident,
+     $($(#[$fmeta:meta])* $field:ident : $ty:ty),* $(,)?) => {
+        $crate::__macro_support::paste::paste! {
+            $crate::cell!(@make $(#[$meta])* $kind, $ctor, $name, $data,
+                $($(#[$fmeta])* $field : $ty => [<$field _mut>]),*);
+        }
     };
     (@make $(#[$meta:meta])* $kind:ident, $ctor:ident, $name:ident, $data:ident,
      $($(#[$fmeta:meta])* $field:ident : $ty:ty => $set:ident),* $(,)?) => {

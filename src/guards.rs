@@ -23,6 +23,11 @@ pub struct ReadGuard<'a, T: ?Sized, S: State> {
     ptr: NonNull<T>,
     /// Whether this guard is the borrow that recorded the holder location, and
     /// must therefore clear it on release. See [`State::end_shared`].
+    ///
+    /// Only meaningful with the `diagnostics` feature: without it nothing is
+    /// recorded, so the flag is dropped and the guard is a pointer pair (16
+    /// bytes) like `Ref` rather than 24.
+    #[cfg(feature = "diagnostics")]
     recorder: bool,
     _not_send: PhantomData<*const ()>,
 }
@@ -32,9 +37,12 @@ impl<'a, T: ?Sized, S: State> ReadGuard<'a, T, S> {
         // SAFETY: `Inner` hands out `UnsafeCell::get()` pointers, which are
         // never null.
         let ptr = unsafe { NonNull::new_unchecked(ptr.cast_mut()) };
+        #[cfg(not(feature = "diagnostics"))]
+        let _ = recorder;
         Self {
             state,
             ptr,
+            #[cfg(feature = "diagnostics")]
             recorder,
             _not_send: PhantomData,
         }
@@ -61,12 +69,14 @@ impl<'a, T: ?Sized, S: State> ReadGuard<'a, T, S> {
         // reference produced by `f` is derived from the value it points at.
         let mapped: *const U = core::ptr::from_ref(f(unsafe { &*guard.ptr.as_ptr() }));
         let state = guard.state;
+        #[cfg(feature = "diagnostics")]
         let recorder = guard.recorder;
         core::mem::forget(guard);
         ReadGuard {
             state,
             // SAFETY: as above; `mapped` cannot be null because it is a reference.
             ptr: unsafe { NonNull::new_unchecked(mapped.cast_mut()) },
+            #[cfg(feature = "diagnostics")]
             recorder,
             _not_send: PhantomData,
         }
@@ -97,7 +107,11 @@ impl<T: ?Sized + fmt::Display, S: State> fmt::Display for ReadGuard<'_, T, S> {
 
 impl<T: ?Sized, S: State> Drop for ReadGuard<'_, T, S> {
     fn drop(&mut self) {
-        self.state.end_shared(self.recorder);
+        #[cfg(feature = "diagnostics")]
+        let recorder = self.recorder;
+        #[cfg(not(feature = "diagnostics"))]
+        let recorder = false;
+        self.state.end_shared(recorder);
     }
 }
 
@@ -129,6 +143,7 @@ impl<T: ?Sized, S: State> Clone for ReadGuard<'_, T, S> {
             ptr: self.ptr,
             // The original keeps the recorder flag; this clone did not record
             // the holder, so it must not clear it.
+            #[cfg(feature = "diagnostics")]
             recorder: false,
             _not_send: PhantomData,
         }

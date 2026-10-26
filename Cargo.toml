@@ -20,7 +20,20 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = []
+default = ["diagnostics"]
+# Records the source location of every borrow, so a refused borrow can name the
+# borrow that is in the way and the borrow that was refused. This is what makes
+# `Conflict::holder`/`wanted` carry a location and what the panicking messages
+# print; turning it off drops `holder` from the single-threaded state entirely,
+# so `Inline<u64>` is the same size as `RefCell<u64>` (16 bytes) and a borrow
+# costs what `RefCell`'s costs. `#[track_caller]` remains on the methods either
+# way - it is a no-op with no consumer, and keeping it on means the source
+# compiles unchanged.
+diagnostics = []
+# Lets `cell!` derive a setter name from the field name (`count` -> `count_mut`)
+# instead of requiring it to be spelled out. It pulls in `paste`, so it is off
+# by default; the explicit `field => field_mut` form needs nothing.
+paste = ["dep:paste"]
 # Adds `borrow_lite::wait`, an adaptive retry helper that yields. The crate is
 # `no_std` by default, and `thread::yield_now` needs `std`, so the helper is
 # behind this feature. It exists because the benchmarks found that yielding
@@ -29,6 +42,9 @@ default = []
 std = []
 
 [dependencies]
+# Only used by the `paste` feature, to build an identifier like `count_mut` from
+# `count` inside `macro_rules!`. Optional, so the default build pulls in nothing.
+paste = { version = "1.0", optional = true }
 
 # Loom is only pulled in when `RUSTFLAGS=--cfg loom` is set, which only the
 # model-checking test job does. The library itself swaps its atomics for loom's

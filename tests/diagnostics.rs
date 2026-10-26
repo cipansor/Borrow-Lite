@@ -1,4 +1,11 @@
 //! The part that makes the crate worth using: what the panic actually says.
+//!
+//! Every assertion here is about a *location*, which only exists with the
+//! `diagnostics` feature. Without it there is nothing to name, so the whole file
+//! is gated on the feature rather than littered with `#[cfg]` - and the
+//! no-diagnostics build is checked for the opposite property (a conflict is just
+//! a kind) in `tests/no_diagnostics.rs`.
+#![cfg(feature = "diagnostics")]
 
 use borrow_lite::{ConflictKind, Local, Shared};
 

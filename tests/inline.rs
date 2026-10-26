@@ -34,6 +34,7 @@ fn a_read_and_a_write_conflict() {
     cell.with_mut(|v| *v += 1);
 }
 
+#[cfg(feature = "diagnostics")]
 #[test]
 fn the_panic_names_where_the_borrow_is_held() {
     let cell = Inline::new(1u8);
@@ -199,6 +200,7 @@ fn clone_copies_the_value_not_the_handle() {
 
 /// Cloning under an exclusive borrow must panic with a located message, the
 /// same way `RefCell::clone` does, rather than reading through the borrow.
+#[cfg(feature = "diagnostics")]
 #[test]
 fn clone_under_a_write_borrow_reports_the_conflict() {
     let cell = inline(1u8);
@@ -310,6 +312,13 @@ fn swap_and_replace_with_match_refcell() {
     drop(held);
     let self_conflict = a.try_swap(&a).unwrap_err();
     assert_eq!(self_conflict.kind(), ConflictKind::Writer);
+    #[cfg(feature = "diagnostics")]
     assert_eq!(self_conflict.wanted().map(|l| l.file()), Some(file!()));
+    #[cfg(not(feature = "diagnostics"))]
+    assert_eq!(
+        self_conflict.wanted(),
+        None,
+        "no locations without diagnostics"
+    );
     assert_eq!(self_conflict.holder(), None, "a self-swap named a holder");
 }

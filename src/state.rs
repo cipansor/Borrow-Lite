@@ -10,6 +10,19 @@ use core::panic::Location;
 
 use crate::error::{Conflict, ConflictKind};
 
+/// The single-word encoding of a [`LocalState`]'s borrow flags.
+///
+/// `0..WRITER` is the number of live shared borrows; `WRITER` (`usize::MAX`) is
+/// "an exclusive borrow is live". Folding the two into one word is what makes
+/// `LocalState` fit in two `Cell`s - the flags and, with `diagnostics`, the
+/// holder - so `Inline<u64>` is 24 bytes rather than 32, and 16 with
+/// `diagnostics` off (the same as `RefCell<u64>`).
+///
+/// A reader count can never reach `WRITER`: the count is only allowed to grow to
+/// `WRITER - 1`, and the increment past that panics (see
+/// [`add_local_reader`]), so the sentinel is never mistaken for a count.
+const WRITER: usize = usize::MAX;
+
 mod sealed {
     pub trait Sealed {}
 }
@@ -36,11 +49,16 @@ fn reader_count_overflow() -> ! {
 }
 
 /// Increment a non-atomic reader count that must not wrap.
-fn add_local_reader(shared: &Cell<usize>) -> usize {
-    let Some(next) = shared.get().checked_add(1) else {
+///
+/// The word holds either a reader count or the [`WRITER`] sentinel, so a count
+/// that reached `WRITER` would be indistinguishable from an exclusive borrow.
+/// The guard therefore trips one step early - at `WRITER - 1` - rather than
+/// letting the count collide with the sentinel.
+fn add_local_reader(flags: &Cell<usize>) -> usize {
+    let Some(next) = flags.get().checked_add(1).filter(|&next| next != WRITER) else {
         reader_count_overflow()
     };
-    shared.set(next);
+    flags.set(next);
     next
 }
 
@@ -109,19 +127,38 @@ pub trait State: sealed::Sealed + 'static {
 /// The two users of this state are pinned down by the type that wraps it:
 /// [`Inline`](crate::Inline) owns the value and is `Send` when `T: Send`, while
 /// [`Local`](crate::Local) holds it behind an `Rc` and is therefore `!Send`.
+///
+/// The flags are one word: `0..WRITER` readers, or the `WRITER` sentinel for an
+/// exclusive borrow. The holder location is a second `Cell`, and it only exists
+/// with the `diagnostics` feature - without it the struct is a single `Cell`
+/// and costs what `RefCell`'s flag costs.
 pub struct LocalState {
-    shared: Cell<usize>,
-    exclusive: Cell<bool>,
+    flags: Cell<usize>,
+    #[cfg(feature = "diagnostics")]
     holder: Cell<Option<&'static Location<'static>>>,
 }
 
 impl LocalState {
     const fn unborrowed() -> Self {
         Self {
-            shared: Cell::new(0),
-            exclusive: Cell::new(false),
+            flags: Cell::new(0),
+            #[cfg(feature = "diagnostics")]
             holder: Cell::new(None),
         }
+    }
+
+    /// The location of the borrow holding the cell, when diagnostics are on.
+    #[cfg(feature = "diagnostics")]
+    fn holder(&self) -> Option<&'static Location<'static>> {
+        self.holder.get()
+    }
+
+    /// With diagnostics off there is nothing to record, so this is always `None`
+    /// and the caller's `Cell` store disappears entirely.
+    #[cfg(not(feature = "diagnostics"))]
+    #[allow(clippy::unused_self)]
+    const fn holder(&self) -> Option<&'static Location<'static>> {
+        None
     }
 }
 
@@ -133,13 +170,21 @@ impl State for LocalState {
     }
 
     fn try_shared(&self, wanted: &'static Location<'static>) -> Result<bool, Conflict> {
-        if self.exclusive.get() {
+        // One load of the flags, reused for the writer test and the increment,
+        // so the fast path is a load and a store like `RefCell`'s rather than
+        // two loads. The overflow test is fused into the same `checked_add`.
+        let flags = self.flags.get();
+        if flags == WRITER {
             return Err(Conflict::new(ConflictKind::Writer)
-                .with_holder(self.holder.get())
+                .with_holder(self.holder())
                 .with_wanted(wanted));
         }
-        let next = add_local_reader(&self.shared);
+        let Some(next) = flags.checked_add(1).filter(|&next| next != WRITER) else {
+            reader_count_overflow()
+        };
+        self.flags.set(next);
         let recorder = next == 1;
+        #[cfg(feature = "diagnostics")]
         if recorder {
             self.holder.set(Some(wanted));
         }
@@ -147,46 +192,51 @@ impl State for LocalState {
     }
 
     fn try_exclusive(&self, wanted: &'static Location<'static>) -> Result<(), Conflict> {
-        if self.exclusive.get() {
-            // A writer conflict has nothing to count: `shared` is necessarily
+        let flags = self.flags.get();
+        if flags == WRITER {
+            // A writer conflict has nothing to count: the count is necessarily
             // zero while the cell is exclusively borrowed, so attaching it would
             // report "0 active borrows" about a cell that is very much borrowed.
             // Leave the count unset, matching the atomic cell and the documented
             // contract.
             return Err(Conflict::new(ConflictKind::Writer)
-                .with_holder(self.holder.get())
+                .with_holder(self.holder())
                 .with_wanted(wanted));
         }
-        let readers = self.shared.get();
-        if readers > 0 {
+        if flags > 0 {
             return Err(Conflict::new(ConflictKind::Readers)
-                .with_count(readers)
-                .with_holder(self.holder.get())
+                .with_count(flags)
+                .with_holder(self.holder())
                 .with_wanted(wanted));
         }
-        self.exclusive.set(true);
+        self.flags.set(WRITER);
+        #[cfg(feature = "diagnostics")]
         self.holder.set(Some(wanted));
         Ok(())
     }
 
     fn end_shared(&self, recorder: bool) {
-        let next = self.shared.get() - 1;
-        self.shared.set(next);
+        let next = self.flags.get() - 1;
+        self.flags.set(next);
         // Only the recording reader clears the holder. If a *different* reader
         // left first, the recorder may still be alive, so the holder must stay;
         // it is cleared when the recorder itself goes, or when the last reader
         // goes (a safety net for the clone path, which does not set the flag).
+        #[cfg(feature = "diagnostics")]
         if recorder || next == 0 {
             self.holder.set(None);
         }
+        #[cfg(not(feature = "diagnostics"))]
+        let _ = (recorder, next);
     }
 
     fn add_shared(&self) {
-        add_local_reader(&self.shared);
+        add_local_reader(&self.flags);
     }
 
     fn end_exclusive(&self) {
-        self.exclusive.set(false);
+        self.flags.set(0);
+        #[cfg(feature = "diagnostics")]
         self.holder.set(None);
     }
 }
@@ -266,11 +316,40 @@ impl State for AtomicState {
         Self::unborrowed()
     }
 
+    // ── Memory ordering, and why it is not weakened ────────────────────────
+    //
     // The flag juggling below is the classic Dekker-style handshake between a
-    // reader that increments a counter and a writer that claims a flag. Using
-    // `SeqCst` on every operation that participates in that handshake is what
-    // makes it correct: it puts them in one total order, so reader and writer
-    // cannot both conclude that they own the cell.
+    // reader (increments `shared`, then loads `writer`) and a writer (claims
+    // `writer`, then loads `shared`). Each side does a store to one location
+    // followed by a load of the other, and mutual exclusion requires that at
+    // least one side observe the other's store.
+    //
+    // `Acquire`/`Release` cannot give that. Each side's store is a `Release`
+    // and its load an `Acquire`, but those only order the *same* location;
+    // across two locations there is no total order, so the store-buffering
+    // outcome - both sides read zero and both conclude they own the cell - is
+    // permitted. Only `SeqCst` supplies the single total order that rules it
+    // out. So the four operations that make up the handshake
+    // (`shared.fetch_add`, the first `writer` load, the `writer`
+    // compare-exchange, and the `shared` load) stay `SeqCst`.
+    //
+    // The release operations - `end_shared`'s `fetch_sub` and
+    // `end_exclusive`'s `store` - are *already* only `Release`, and that is the
+    // weakest that is sound, not an oversight:
+    //
+    // * they do not participate in the handshake, so they need no global order;
+    // * they must, however, publish the borrow's effects to whoever next
+    //   acquires the cell, which is exactly `Release`. A `Relaxed` release
+    //   would let a subsequent `Acquire` on the *next* borrow read a stale
+    //   value, so `Relaxed` is not an option.
+    //
+    // This was checked against the model, not assumed: `tests/loom.rs` asserts
+    // that loom's `AcqRel` approximation accepts the store-buffering outcome,
+    // which is the evidence that the handshake genuinely needs `SeqCst` and
+    // cannot be relaxed. Weakening any of the four handshake operations would
+    // therefore be a soundness change with no measurement to justify it, so
+    // none of them is weakened. See the `AtomicState` docs for the one window
+    // (`try_exclusive`'s back-off) that a wider word could close.
     fn try_shared(&self, wanted: &'static Location<'static>) -> Result<bool, Conflict> {
         // One load, decoded from the value read, so the "is there a writer"
         // answer and the location cannot disagree.
@@ -368,7 +447,7 @@ mod overflow_tests {
     #[test]
     fn local_reader_count_overflow_panics_instead_of_wrapping() {
         let state = LocalState::unborrowed();
-        state.shared.set(usize::MAX);
+        state.flags.set(usize::MAX - 1);
 
         let panic = panic::catch_unwind(AssertUnwindSafe(|| {
             let _ = state.try_shared(here());
@@ -381,14 +460,14 @@ mod overflow_tests {
 
         // The refused increment left the count alone, so the cell still refuses
         // a writer: the reader that filled the counter is still accounted for.
-        assert_eq!(state.shared.get(), usize::MAX);
+        assert_eq!(state.flags.get(), usize::MAX - 1);
         assert!(state.try_exclusive(here()).is_err());
     }
 
     #[test]
     fn local_add_shared_overflow_panics_instead_of_wrapping() {
         let state = LocalState::unborrowed();
-        state.shared.set(usize::MAX);
+        state.flags.set(usize::MAX - 1);
 
         let panic = panic::catch_unwind(AssertUnwindSafe(|| state.add_shared()))
             .expect_err("cloning a reader past the counter's limit must panic");
@@ -396,7 +475,7 @@ mod overflow_tests {
             .downcast_ref::<String>()
             .expect("borrow_lite panics with a formatted String");
         assert!(message.contains("overflow"), "{message}");
-        assert_eq!(state.shared.get(), usize::MAX);
+        assert_eq!(state.flags.get(), usize::MAX - 1);
     }
 
     #[test]
@@ -420,8 +499,8 @@ mod overflow_tests {
     fn a_reader_count_below_the_limit_still_grows() {
         // The guard must not fire on the ordinary path.
         let local = LocalState::unborrowed();
-        assert_eq!(add_local_reader(&local.shared), 1);
-        assert_eq!(local.shared.get(), 1);
+        assert_eq!(add_local_reader(&local.flags), 1);
+        assert_eq!(local.flags.get(), 1);
 
         let atomic = AtomicState::unborrowed();
         add_atomic_reader(&atomic.shared);

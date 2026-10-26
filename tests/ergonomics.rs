@@ -265,3 +265,45 @@ fn observable_get_is_shorter_than_the_closure_form() {
         100.0 * reduction(closure_read, borrow_read)
     );
 }
+
+/// The shorter spellings: `update`/`map` for the closure forms, and `modify`
+/// for the `+=`/`-=` operators.
+///
+/// These are aliases and operators over the same borrow, so the claim to check
+/// is only that they are not *longer* than the forms they replace. The honest
+/// direction: `update` is exactly `with_mut` with a shorter name, so it must be
+/// strictly shorter on the same body.
+#[test]
+fn the_short_forms_are_not_longer_than_the_closure_forms() {
+    let with_mut = r#"
+        cell.with_mut(|v| v.push(4));
+    "#;
+    let update = r#"
+        cell.update(|v| v.push(4));
+    "#;
+    assert!(
+        chars(update) < chars(with_mut),
+        "update should be shorter than with_mut"
+    );
+
+    let with = r#"
+        let total = cell.with(|v| v.iter().sum::<i32>());
+    "#;
+    let map = r#"
+        let total = cell.map(|v| v.iter().sum::<i32>());
+    "#;
+    assert!(chars(map) < chars(with), "map should be shorter than with");
+
+    // The operator form against the closure it replaces.
+    let closure_add = r#"
+        cell.update(|v| *v += delta);
+    "#;
+    let operator_add = r#"
+        cell += delta;
+    "#;
+    assert!(
+        reduction(closure_add, operator_add) >= 0.40,
+        "+= should be much shorter than the closure: {:.0}%",
+        100.0 * reduction(closure_add, operator_add)
+    );
+}

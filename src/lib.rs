@@ -195,6 +195,11 @@ pub use crate::wait::{retry, wait};
 #[doc(hidden)]
 pub mod __macro_support {
     pub use crate::{Inline, Local, ReadGuard, Shared, WriteGuard, inline, local, shared};
+    /// Re-exported so the `cell!` default-setter form can build `<field>_mut`
+    /// from `<field>` through `$crate`, wherever the macro is invoked. Only
+    /// present with the `paste` feature.
+    #[cfg(feature = "paste")]
+    pub use ::paste;
 }
 
 /// Shared, mutable data that lives in one thread.
@@ -407,6 +412,28 @@ impl<T: ?Sized> Deref for Inline<T> {
 impl<T> From<T> for Inline<T> {
     fn from(value: T) -> Self {
         Self::new(value)
+    }
+}
+
+impl<T> core::ops::AddAssign<T> for Inline<T>
+where
+    T: Sized + core::ops::AddAssign<T>,
+{
+    /// `cell += delta`, one exclusive borrow. See [`Inner::modify`].
+    #[track_caller]
+    fn add_assign(&mut self, delta: T) {
+        self.0.modify(delta);
+    }
+}
+
+impl<T> core::ops::SubAssign<T> for Inline<T>
+where
+    T: Sized + core::ops::SubAssign<T>,
+{
+    /// `cell -= delta`, one exclusive borrow.
+    #[track_caller]
+    fn sub_assign(&mut self, delta: T) {
+        self.0.update(|value| *value -= delta);
     }
 }
 
@@ -793,6 +820,58 @@ impl<T> From<T> for Local<T> {
 impl<T> From<T> for Shared<T> {
     fn from(value: T) -> Self {
         Self::new(value)
+    }
+}
+
+/// `cell += delta` on a [`Local`], one exclusive borrow.
+///
+/// The operator form of [`Inner::modify`]: it panics with a located message if
+/// the cell is borrowed at the time, exactly as `with_mut` does. Use
+/// [`Inner::try_modify`] when a conflict is expected.
+impl<T> core::ops::AddAssign<T> for Local<T>
+where
+    T: Sized + core::ops::AddAssign<T>,
+{
+    #[track_caller]
+    fn add_assign(&mut self, delta: T) {
+        self.0.modify(delta);
+    }
+}
+
+/// `cell -= delta` on a [`Local`], one exclusive borrow.
+impl<T> core::ops::SubAssign<T> for Local<T>
+where
+    T: Sized + core::ops::SubAssign<T>,
+{
+    #[track_caller]
+    fn sub_assign(&mut self, delta: T) {
+        self.0.update(|value| *value -= delta);
+    }
+}
+
+/// `cell += delta` on a [`Shared`], one exclusive borrow.
+///
+/// The operator form of [`Inner::modify`]: it panics with a located message if
+/// the cell is borrowed at the time. Use [`Inner::try_modify`] when a conflict
+/// is expected - which, across threads, is the usual case.
+impl<T> core::ops::AddAssign<T> for Shared<T>
+where
+    T: Sized + core::ops::AddAssign<T>,
+{
+    #[track_caller]
+    fn add_assign(&mut self, delta: T) {
+        self.0.modify(delta);
+    }
+}
+
+/// `cell -= delta` on a [`Shared`], one exclusive borrow.
+impl<T> core::ops::SubAssign<T> for Shared<T>
+where
+    T: Sized + core::ops::SubAssign<T>,
+{
+    #[track_caller]
+    fn sub_assign(&mut self, delta: T) {
+        self.0.update(|value| *value -= delta);
     }
 }
 

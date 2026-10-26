@@ -115,24 +115,37 @@ const _: () = {
 
 /// The exact byte counts the README quotes, pinned so they cannot drift.
 ///
-/// These are the numbers `examples/sizes.rs` prints and the README repeats
-/// ("`Inline<u64>` is 32 bytes against `RefCell<u64>`'s 16"), and a printed
-/// number cannot fail a build - if `LocalState` grows a field the cell would
-/// get wider and the prose would quietly become wrong. A `const` assertion
-/// turns that into a compile error.
+/// These are the numbers `examples/sizes.rs` prints and the README repeats, and
+/// a printed number cannot fail a build - if `LocalState` grows a field the cell
+/// would get wider and the prose would quietly become wrong. A `const`
+/// assertion turns that into a compile error.
 ///
 /// They are 64-bit layout facts rather than portable guarantees, so they are
 /// gated on the pointer width; the guard sizes depend on the handle, the raw
 /// pointer and the recorder flag, which is what makes a `ReadGuard` wider than
 /// a `WriteGuard`.
+///
+/// The `Inline` size is the whole point of the `diagnostics` feature, so it is
+/// asserted for *both* modes here rather than left to the default build:
+/// `Inline<u64>` is 24 bytes with the holder recorded and 16 without it - the
+/// same 16 as `RefCell<u64>`, which is the claim the feature exists to make.
+/// The `ReadGuard` shrinks with it (the recorder flag is dropped), so its size
+/// is asserted per mode too.
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     use borrow_lite::Inline;
     use borrow_lite::state::LocalState;
 
-    assert!(core::mem::size_of::<Inline<u64>>() == 32);
+    #[cfg(feature = "diagnostics")]
+    assert!(core::mem::size_of::<Inline<u64>>() == 24);
+    #[cfg(not(feature = "diagnostics"))]
+    assert!(core::mem::size_of::<Inline<u64>>() == 16);
     assert!(core::mem::size_of::<std::cell::RefCell<u64>>() == 16);
+
+    #[cfg(feature = "diagnostics")]
     assert!(core::mem::size_of::<borrow_lite::ReadGuard<'static, u64, LocalState>>() == 24);
+    #[cfg(not(feature = "diagnostics"))]
+    assert!(core::mem::size_of::<borrow_lite::ReadGuard<'static, u64, LocalState>>() == 16);
     assert!(core::mem::size_of::<borrow_lite::WriteGuard<'static, u64, LocalState>>() == 16);
 };
 

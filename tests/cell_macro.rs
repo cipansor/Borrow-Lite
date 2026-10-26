@@ -113,6 +113,7 @@ fn accessors_return_the_same_conflict_type_as_a_plain_borrow() {
 /// the two apart - both are in `tests/cell_macro.rs` - so the assertion pins the
 /// line: `line!()` and the accessor call are both tokens of the macro below, and
 /// both resolve to the single line the macro is invoked on.
+#[cfg(feature = "diagnostics")]
 #[test]
 fn a_refused_field_access_names_the_caller() {
     /// Panic line from a `borrow attempted at <file>:<line>:<col>` message.
@@ -208,4 +209,30 @@ fn zero_field_struct_is_allowed() {
     cell! { shared Empty, EmptyData {} }
     let e = Empty::new();
     assert_eq!(e.handle().with(|d| d.clone()), EmptyData {});
+}
+
+/// The optional setter name: omitting `=> setter` derives `<field>_mut`.
+///
+/// This needs the `paste` feature (a declarative macro cannot build an
+/// identifier from another), so the test is gated on it - but it is the whole
+/// point of the feature, so it must actually run when the feature is on rather
+/// than be left to a doctest that cannot.
+#[cfg(feature = "paste")]
+mod derived_setter_names {
+    use borrow_lite::cell;
+
+    cell! {
+        shared Counter, CounterData {
+            count: u64,
+            label: String,
+        }
+    }
+
+    #[test]
+    fn the_setter_is_the_field_name_plus_mut() {
+        let counter = Counter::new(0, String::from("x"));
+        *counter.count_mut() += 5;
+        counter.label_mut().push('!');
+        assert_eq!((*counter.count(), counter.label().as_str()), (5, "x!"));
+    }
 }

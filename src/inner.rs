@@ -67,6 +67,19 @@ impl<T, S: State> Inner<T, S> {
     }
 }
 
+/// The call site recorded for a borrow.
+///
+/// With `diagnostics` on this is `Location::caller()`, threaded through the
+/// `#[track_caller]` layers above so a conflict can name the line that
+/// attempted the borrow. With the feature off no location is ever stored, so
+/// this deliberately is *not* `#[track_caller]`: `Location::caller()` then
+/// returns the location of this very call - a compile-time constant - and the
+/// caller chain above it has no observable effect.
+#[cfg_attr(feature = "diagnostics", track_caller)]
+fn borrow_site() -> &'static Location<'static> {
+    Location::caller()
+}
+
 impl<T: ?Sized, S: State> Inner<T, S> {
     /// Direct access to the value, with no borrow flag and no guard.
     ///
@@ -83,9 +96,9 @@ impl<T: ?Sized, S: State> Inner<T, S> {
 impl<T: ?Sized, S: State> Inner<T, S> {
     /// Borrow the value mutably, panicking with a located message if that is
     /// not possible right now.
-    #[track_caller]
+    #[cfg_attr(feature = "diagnostics", track_caller)]
     pub fn borrow_mut(&self) -> WriteGuard<'_, T, S> {
-        match self.state.try_exclusive(Location::caller()) {
+        match self.state.try_exclusive(borrow_site()) {
             Ok(()) => WriteGuard::new(&self.state, self.value.get()),
             Err(conflict) => panic!("{}", conflict.into_panic_message()),
         }
@@ -95,7 +108,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     #[track_caller]
     pub fn try_borrow_mut(&self) -> Result<WriteGuard<'_, T, S>, Conflict> {
         self.state
-            .try_exclusive(Location::caller())
+            .try_exclusive(borrow_site())
             .map(|()| WriteGuard::new(&self.state, self.value.get()))
     }
 
@@ -114,6 +127,112 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     #[track_caller]
     pub fn try_with_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> Result<R, Conflict> {
         self.try_borrow_mut().map(|mut guard| f(&mut guard))
+    }
+
+    /// Run `f` with an exclusive borrow, released before this call returns.
+    ///
+    /// The same borrow as [`with_mut`](Self::with_mut) under a shorter name, and
+    /// the verb `Observable` already uses for "mutate the value". It is the
+    /// write-shaped counterpart of [`map`](Self::map), so a cell reads as
+    /// `cell.map(..)` to look and `cell.update(..)` to change.
+    ///
+    /// ```
+    /// use borrow_lite::local;
+    ///
+    /// let stats = local(vec![1, 2, 3]);
+    /// stats.update(|v| v.push(4));
+    /// assert_eq!(stats.map(Vec::len), 4);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is already borrowed. Use
+    /// [`try_update`](Self::try_update) for that case as a `Result`.
+    #[track_caller]
+    pub fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.with_mut(f)
+    }
+
+    /// Run `f` with an exclusive borrow, or return the conflict to the caller.
+    ///
+    /// The non-panicking form of [`update`](Self::update).
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Conflict`] if the cell cannot be borrowed exclusively.
+    ///
+    /// ```
+    /// use borrow_lite::local;
+    ///
+    /// let cell = local(1i32);
+    /// let held = cell.borrow();
+    /// assert!(cell.try_update(|v| *v += 1).is_err());
+    /// drop(held);
+    /// assert_eq!(cell.try_update(|v| *v += 1), Ok(()));
+    /// ```
+    #[track_caller]
+    pub fn try_update<R>(&self, f: impl FnOnce(&mut T) -> R) -> Result<R, Conflict> {
+        self.try_with_mut(f)
+    }
+
+    /// Add `delta` to the value, with one method.
+    ///
+    /// The operator-shaped form of [`update`](Self::update): `cell.modify(5)`
+    /// is `cell.update(|v| *v += 5)`, and the `+=` operator on the handle is the
+    /// same call. It takes the same exclusive borrow, released before it
+    /// returns, so it cannot leak. For subtraction use the `-=` operator (or
+    /// [`update`](Self::update) with `-=`); a method cannot tell an add from a
+    /// subtract without knowing the sign of `T`.
+    ///
+    /// ```
+    /// use borrow_lite::local;
+    ///
+    /// let counter = local(10i32);
+    /// counter.modify(5);
+    /// assert_eq!(counter.map(|v| *v), 15);
+    ///
+    /// let mut cell = local(10i32);
+    /// cell += 5; // the operator, same borrow
+    /// cell -= 3;
+    /// assert_eq!(cell.map(|v| *v), 12);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is already borrowed. Use
+    /// [`try_modify`](Self::try_modify) for that case as a `Result`.
+    #[track_caller]
+    pub fn modify(&self, delta: T)
+    where
+        T: Sized + core::ops::AddAssign<T>,
+    {
+        self.with_mut(|value| *value += delta);
+    }
+
+    /// Add `delta` to the value, or return the conflict to the caller.
+    ///
+    /// The non-panicking form of [`modify`](Self::modify).
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Conflict`] if the cell cannot be borrowed exclusively.
+    ///
+    /// ```
+    /// use borrow_lite::local;
+    ///
+    /// let counter = local(10i32);
+    /// let held = counter.borrow();
+    /// assert!(counter.try_modify(5).is_err());
+    /// drop(held);
+    /// assert_eq!(counter.try_modify(5), Ok(()));
+    /// assert_eq!(counter.map(|v| *v), 15);
+    /// ```
+    #[track_caller]
+    pub fn try_modify(&self, delta: T) -> Result<(), Conflict>
+    where
+        T: Sized + core::ops::AddAssign<T>,
+    {
+        self.try_with_mut(|value| *value += delta)
     }
 
     /// Store a new value, without a closure.
@@ -466,7 +585,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
         // second borrow failing inside this function.
         if core::ptr::eq(self, other) {
             return Err(
-                Conflict::new(crate::error::ConflictKind::Writer).with_wanted(Location::caller())
+                Conflict::new(crate::error::ConflictKind::Writer).with_wanted(borrow_site())
             );
         }
         let mut a = self.try_borrow_mut()?;
@@ -481,9 +600,9 @@ impl<T: ?Sized, S: State> Inner<T, S> {
 impl<T: ?Sized> Inner<T, LocalState> {
     /// Borrow the value, panicking with a located message if that is not
     /// possible right now.
-    #[track_caller]
+    #[cfg_attr(feature = "diagnostics", track_caller)]
     pub fn borrow(&self) -> ReadGuard<'_, T, LocalState> {
-        match self.state.try_shared(Location::caller()) {
+        match self.state.try_shared(borrow_site()) {
             Ok(recorder) => ReadGuard::new(&self.state, self.value.get(), recorder),
             Err(conflict) => panic!("{}", conflict.into_panic_message()),
         }
@@ -493,7 +612,7 @@ impl<T: ?Sized> Inner<T, LocalState> {
     #[track_caller]
     pub fn try_borrow(&self) -> Result<ReadGuard<'_, T, LocalState>, Conflict> {
         self.state
-            .try_shared(Location::caller())
+            .try_shared(borrow_site())
             .map(|recorder| ReadGuard::new(&self.state, self.value.get(), recorder))
     }
 
@@ -507,6 +626,58 @@ impl<T: ?Sized> Inner<T, LocalState> {
     #[track_caller]
     pub fn try_with<R>(&self, f: impl FnOnce(&T) -> R) -> Result<R, Conflict> {
         self.try_borrow().map(|guard| f(&guard))
+    }
+
+    /// Project the value through `f`, with the borrow released before returning.
+    ///
+    /// The read-shaped counterpart of [`update`](Self::update): `cell.map(f)`
+    /// is `cell.with(f)`, named for the transformation rather than the borrow.
+    /// It is the form to reach for when the closure's job is to look at the
+    /// value and hand something back - a sum, a length, a field - and the
+    /// result must not borrow the cell:
+    ///
+    /// ```
+    /// use borrow_lite::local;
+    ///
+    /// let stats = local(vec![1, 2, 3]);
+    /// assert_eq!(stats.map(|v| v.iter().sum::<i32>()), 6);
+    /// assert_eq!(stats.map(Vec::len), 3);
+    /// ```
+    ///
+    /// The result `R` may not borrow the cell - `f` returns an owned value, or
+    /// a reference to something with a longer life - so this cannot leak a
+    /// borrow the way a guard can. To hand out a reference into the cell, take
+    /// the guard with [`borrow`](Self::borrow) instead.
+    ///
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is already borrowed. Use
+    /// [`try_map`](Self::try_map) for that case as a `Result`.
+    #[track_caller]
+    pub fn map<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        self.with(f)
+    }
+
+    /// Project the value through `f`, or return the conflict to the caller.
+    ///
+    /// The non-panicking form of [`map`](Self::map).
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Conflict`] if the value cannot be borrowed.
+    ///
+    /// ```
+    /// use borrow_lite::local;
+    ///
+    /// let stats = local(vec![1, 2, 3]);
+    /// let held = stats.borrow_mut();
+    /// assert!(stats.try_map(Vec::len).is_err());
+    /// drop(held);
+    /// assert_eq!(stats.try_map(Vec::len), Ok(3));
+    /// ```
+    #[track_caller]
+    pub fn try_map<R>(&self, f: impl FnOnce(&T) -> R) -> Result<R, Conflict> {
+        self.try_with(f)
     }
 
     /// Copy the value out, without a closure.
@@ -632,7 +803,7 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
     /// possible right now.
     #[track_caller]
     pub fn borrow(&self) -> ReadGuard<'_, T, AtomicState> {
-        match self.state.try_shared(Location::caller()) {
+        match self.state.try_shared(borrow_site()) {
             Ok(recorder) => ReadGuard::new(&self.state, self.value.get(), recorder),
             Err(conflict) => panic!("{}", conflict.into_panic_message()),
         }
@@ -642,7 +813,7 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
     #[track_caller]
     pub fn try_borrow(&self) -> Result<ReadGuard<'_, T, AtomicState>, Conflict> {
         self.state
-            .try_shared(Location::caller())
+            .try_shared(borrow_site())
             .map(|recorder| ReadGuard::new(&self.state, self.value.get(), recorder))
     }
 
@@ -656,6 +827,58 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
     #[track_caller]
     pub fn try_with<R>(&self, f: impl FnOnce(&T) -> R) -> Result<R, Conflict> {
         self.try_borrow().map(|guard| f(&guard))
+    }
+
+    /// Project the value through `f`, with the borrow released before returning.
+    ///
+    /// The read-shaped counterpart of [`update`](Self::update): `cell.map(f)`
+    /// is `cell.with(f)`, named for the transformation rather than the borrow.
+    /// It is the form to reach for when the closure's job is to look at the
+    /// value and hand something back - a sum, a length, a field - and the
+    /// result must not borrow the cell:
+    ///
+    /// ```
+    /// use borrow_lite::local;
+    ///
+    /// let stats = local(vec![1, 2, 3]);
+    /// assert_eq!(stats.map(|v| v.iter().sum::<i32>()), 6);
+    /// assert_eq!(stats.map(Vec::len), 3);
+    /// ```
+    ///
+    /// The result `R` may not borrow the cell - `f` returns an owned value, or
+    /// a reference to something with a longer life - so this cannot leak a
+    /// borrow the way a guard can. To hand out a reference into the cell, take
+    /// the guard with [`borrow`](Self::borrow) instead.
+    ///
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is already borrowed. Use
+    /// [`try_map`](Self::try_map) for that case as a `Result`.
+    #[track_caller]
+    pub fn map<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        self.with(f)
+    }
+
+    /// Project the value through `f`, or return the conflict to the caller.
+    ///
+    /// The non-panicking form of [`map`](Self::map).
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Conflict`] if the value cannot be borrowed.
+    ///
+    /// ```
+    /// use borrow_lite::local;
+    ///
+    /// let stats = local(vec![1, 2, 3]);
+    /// let held = stats.borrow_mut();
+    /// assert!(stats.try_map(Vec::len).is_err());
+    /// drop(held);
+    /// assert_eq!(stats.try_map(Vec::len), Ok(3));
+    /// ```
+    #[track_caller]
+    pub fn try_map<R>(&self, f: impl FnOnce(&T) -> R) -> Result<R, Conflict> {
+        self.try_with(f)
     }
 
     /// Copy the value out, without a closure.

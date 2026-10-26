@@ -259,6 +259,7 @@ fn shared_borrows_coexist_across_threads() {
 /// writer conflict and must carry a location. This is the runtime counterpart of
 /// `a_writer_conflict_always_carries_a_location` in `tests/loom.rs`: the loom
 /// model explores the interleavings, this pins the outcome on a real machine.
+#[cfg(feature = "diagnostics")]
 #[test]
 fn a_writer_conflict_always_names_the_writer() {
     let cell: Shared<u32> = shared(0);

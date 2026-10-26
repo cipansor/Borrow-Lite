@@ -35,7 +35,9 @@ fn writer_is_refused_while_readers_are_alive() {
     let conflict = cell.try_borrow_mut().unwrap_err();
     assert_eq!(conflict.kind(), ConflictKind::Readers);
     assert_eq!(conflict.count(), Some(1));
+    #[cfg(feature = "diagnostics")]
     assert!(conflict.holder().is_some());
+    #[cfg(feature = "diagnostics")]
     assert!(conflict.wanted().is_some());
     drop(guard);
 
@@ -57,6 +59,7 @@ fn reader_is_refused_while_a_writer_is_alive() {
     assert_eq!(cell.try_borrow().unwrap().len(), 1);
 }
 
+#[cfg(feature = "diagnostics")]
 #[test]
 fn conflict_reports_the_holder_location() {
     let cell = Local::new(0u8);
@@ -205,6 +208,7 @@ fn a_writer_refused_by_a_writer_does_not_report_a_zero_count() {
             !message.contains("0 active borrows"),
             "{label}: the message lied about the count: {message}"
         );
+        #[cfg(feature = "diagnostics")]
         assert!(
             message.contains("held at"),
             "{label}: the writer should still be named: {message}"
@@ -898,6 +902,7 @@ mod irreflexive_payload {
 /// is written only on the writer path, so a readers conflict on a `Shared` cell
 /// names its count but no location; the `Local` cell can name the first reader
 /// for free. Both halves are pinned here, because the docs promise them.
+#[cfg(feature = "diagnostics")]
 mod holder_locations {
     use borrow_lite::{ConflictKind, Local, Shared, local, shared};
 
@@ -1169,6 +1174,7 @@ mod closure_free_access {
             .cloned()
             .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
             .expect("a string panic message");
+        #[cfg(feature = "diagnostics")]
         assert!(
             message.contains("held at"),
             "the panic must name the holder's location, got: {message}"
@@ -1195,5 +1201,109 @@ mod closure_free_access {
         assert!(cell.try_get().is_err());
         drop(held);
         assert_eq!(cell.try_get().unwrap(), 5);
+    }
+}
+
+/// The ergonomic aliases and operators added on top of the closure forms:
+/// `update` (alias of `with_mut`), `map` (a read projection), `modify` and the
+/// `+=`/`-=` operators.
+///
+/// They are the same borrow, so the contract to check is that they behave
+/// exactly like the forms they stand in for - including refusing on a conflict
+/// and releasing before returning.
+mod ergonomic_forms {
+    use borrow_lite::{Inline, Local, Shared, inline, local, shared};
+
+    #[test]
+    fn update_is_with_mut() {
+        let cell = local(vec![1, 2, 3]);
+        cell.update(|v| v.push(4));
+        assert_eq!(cell.with(Vec::len), 4);
+
+        // The closure's return value comes back, like `with_mut`.
+        assert_eq!(cell.update(|v| v.len()), 4);
+
+        // And the borrow is released, so the next one succeeds.
+        assert!(cell.try_borrow().is_ok());
+    }
+
+    #[test]
+    fn map_projects_a_read() {
+        let cell = local(vec![1, 2, 3]);
+        assert_eq!(cell.map(|v| v.iter().sum::<i32>()), 6);
+        assert_eq!(cell.map(Vec::len), 3);
+        // The borrow is released before `map` returns.
+        assert!(cell.try_borrow_mut().is_ok());
+    }
+
+    #[test]
+    fn try_update_and_try_map_report_the_conflict() {
+        let cell = local(1i32);
+        let held = cell.borrow_mut();
+        assert!(cell.try_update(|v| *v += 1).is_err());
+        assert!(cell.try_map(|v| *v).is_err());
+        drop(held);
+        assert_eq!(cell.try_update(|v| *v += 1), Ok(()));
+        assert_eq!(cell.try_map(|v| *v), Ok(2));
+    }
+
+    #[test]
+    fn modify_adds_and_the_operators_add_and_subtract() {
+        let counter = local(10i32);
+        counter.modify(5);
+        assert_eq!(counter.map(|v| *v), 15);
+
+        let mut cell = local(10i32);
+        cell += 5;
+        cell -= 3;
+        assert_eq!(cell.map(|v| *v), 12);
+    }
+
+    #[test]
+    fn try_modify_hands_back_the_conflict() {
+        let counter = local(10i32);
+        let held = counter.borrow();
+        assert!(counter.try_modify(5).is_err());
+        drop(held);
+        assert_eq!(counter.try_modify(5), Ok(()));
+        assert_eq!(counter.map(|v| *v), 15);
+    }
+
+    /// The operators exist on all three handles and reach the same value
+    /// through the same borrow.
+    #[test]
+    fn the_operators_work_on_every_shape() {
+        let mut inline_cell: Inline<i64> = inline(1);
+        inline_cell += 2;
+        assert_eq!(inline_cell.map(|v| *v), 3);
+
+        let mut local_cell: Local<i64> = local(1);
+        local_cell -= 2;
+        assert_eq!(local_cell.map(|v| *v), -1);
+
+        let mut shared_cell: Shared<i64> = shared(1);
+        shared_cell += 41;
+        assert_eq!(shared_cell.map(|v| *v), 42);
+    }
+
+    /// A conflict through the operators panics with the same located message
+    /// as `with_mut`, because it *is* `with_mut`.
+    #[cfg(feature = "diagnostics")]
+    #[test]
+    fn a_refused_operator_names_the_holder() {
+        // The operator takes `&mut self`, so the conflicting borrow has to be
+        // taken through a second handle to the same cell.
+        let cell = local(1i32);
+        let mut handle = cell.clone();
+        let _held = cell.borrow();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle += 1;
+        }))
+        .expect_err("the operator must refuse while the cell is read-borrowed");
+        let message = panic
+            .downcast_ref::<String>()
+            .expect("borrow_lite panics with a formatted String");
+        assert!(message.contains("already immutably borrowed"), "{message}");
+        assert!(message.contains("held at tests/behaviour.rs:"), "{message}");
     }
 }

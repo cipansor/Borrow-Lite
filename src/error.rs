@@ -46,7 +46,11 @@ pub struct Conflict {
     kind: ConflictKind,
     /// Number of active borrows of that kind, when the mode can count them.
     count: Option<usize>,
+    /// Present only with the `diagnostics` feature; without it a conflict is
+    /// just a kind (and a count), which is what makes it free to build.
+    #[cfg(feature = "diagnostics")]
     holder: Option<&'static Location<'static>>,
+    #[cfg(feature = "diagnostics")]
     wanted: Option<&'static Location<'static>>,
 }
 
@@ -55,7 +59,9 @@ impl Conflict {
         Self {
             kind,
             count: None,
+            #[cfg(feature = "diagnostics")]
             holder: None,
+            #[cfg(feature = "diagnostics")]
             wanted: None,
         }
     }
@@ -65,13 +71,29 @@ impl Conflict {
         self
     }
 
+    /// Record where the borrow in the way was taken. A no-op without
+    /// `diagnostics`, which is the whole point of the feature.
+    #[cfg(feature = "diagnostics")]
     pub(crate) const fn with_holder(mut self, holder: Option<&'static Location<'static>>) -> Self {
         self.holder = holder;
         self
     }
 
+    #[cfg(not(feature = "diagnostics"))]
+    pub(crate) const fn with_holder(self, _holder: Option<&'static Location<'static>>) -> Self {
+        self
+    }
+
+    /// Record where the refused borrow was attempted. A no-op without
+    /// `diagnostics`.
+    #[cfg(feature = "diagnostics")]
     pub(crate) const fn with_wanted(mut self, wanted: &'static Location<'static>) -> Self {
         self.wanted = Some(wanted);
+        self
+    }
+
+    #[cfg(not(feature = "diagnostics"))]
+    pub(crate) const fn with_wanted(self, _wanted: &'static Location<'static>) -> Self {
         self
     }
 
@@ -83,7 +105,11 @@ impl Conflict {
 
     /// Where the borrow that is in the way was taken, if known.
     ///
-    /// `None` is possible, and the cases are worth knowing:
+    /// Without the `diagnostics` feature this is always `None`: nothing records
+    /// a location, so there is no holder to report.
+    ///
+    /// `None` is possible even with `diagnostics` on, and the cases are worth
+    /// knowing:
     ///
     /// - On a [`Shared`](crate::Shared) cell a conflict blamed on
     ///   [`Readers`](ConflictKind::Readers) has no holder. Readers do not record
@@ -109,13 +135,29 @@ impl Conflict {
     /// it is closed only at the cost of a wider atomic word.
     #[must_use]
     pub const fn holder(self) -> Option<&'static Location<'static>> {
-        self.holder
+        #[cfg(feature = "diagnostics")]
+        {
+            self.holder
+        }
+        #[cfg(not(feature = "diagnostics"))]
+        {
+            None
+        }
     }
 
     /// Where the refused borrow was attempted.
+    ///
+    /// Without the `diagnostics` feature this is always `None`.
     #[must_use]
     pub const fn wanted(self) -> Option<&'static Location<'static>> {
-        self.wanted
+        #[cfg(feature = "diagnostics")]
+        {
+            self.wanted
+        }
+        #[cfg(not(feature = "diagnostics"))]
+        {
+            None
+        }
     }
 
     /// Number of active borrows of [`kind`](Self::kind), if the mode counts them.
@@ -137,11 +179,14 @@ impl Conflict {
     pub(crate) fn into_panic_message(self) -> String {
         let mut out = String::from("borrow_lite: cell is already ");
         out.push_str(self.kind.as_str());
-        if let Some(wanted) = self.wanted {
+        // `holder`/`wanted` are `None` without `diagnostics`, so these branches
+        // disappear from the off build and only the kind and the count are
+        // printed - which is what `RefCell`'s message carries.
+        if let Some(wanted) = self.wanted() {
             // Writing into the `String` cannot fail.
             let _ = write!(out, " (borrow attempted at {wanted})");
         }
-        if let Some(holder) = self.holder {
+        if let Some(holder) = self.holder() {
             let _ = write!(out, "; held at {holder}");
         }
         if let Some(count) = self.count {
@@ -156,10 +201,10 @@ impl Conflict {
 impl fmt::Display for Conflict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "already {}", self.kind.as_str())?;
-        if let Some(holder) = self.holder {
+        if let Some(holder) = self.holder() {
             write!(f, " (held at {holder})")?;
         }
-        if let Some(wanted) = self.wanted {
+        if let Some(wanted) = self.wanted() {
             write!(f, ", refused borrow at {wanted}")?;
         }
         Ok(())
@@ -171,8 +216,8 @@ impl fmt::Debug for Conflict {
         f.debug_struct("Conflict")
             .field("kind", &self.kind)
             .field("count", &self.count)
-            .field("holder", &self.holder.map(ToString::to_string))
-            .field("wanted", &self.wanted.map(ToString::to_string))
+            .field("holder", &self.holder().map(ToString::to_string))
+            .field("wanted", &self.wanted().map(ToString::to_string))
             .finish()
     }
 }

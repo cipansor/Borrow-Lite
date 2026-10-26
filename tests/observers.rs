@@ -129,6 +129,7 @@ fn nested_notify_does_not_recurse() {
     source.clear_observers();
 }
 
+#[cfg(feature = "diagnostics")]
 #[test]
 fn update_from_an_observer_panics_with_a_located_message() {
     let source = Observable::new(0i32);
@@ -866,6 +867,7 @@ fn observer_count_is_correct_from_inside_an_observer() {
 /// name the caller, not a line inside the crate. `notify` lacked
 /// `#[track_caller]`, so the message pointed at `src/observ.rs`, which is
 /// exactly the unhelpful diagnostic this crate exists to remove.
+#[cfg(feature = "diagnostics")]
 #[test]
 fn notify_from_inside_an_update_closure_names_the_caller() {
     let value = Observable::new(0i32);
