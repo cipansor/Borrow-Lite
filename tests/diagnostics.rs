@@ -1,6 +1,141 @@
 //! The part that makes the crate worth using: what the panic actually says.
 
-use lite::Local;
+use lite::{ConflictKind, Local, Shared};
+
+/// The panicking comparison operators must blame *this* file, not a line inside
+/// the crate.
+///
+/// `eq`/`partial_cmp`/`cmp` borrow through `with`, and `with` through `borrow`,
+/// so the location only reaches the caller if the chain of `#[track_caller]`
+/// functions is unbroken. Without the attribute on the trait impl the chain
+/// stops inside `src/lib.rs`, and the "borrow attempted at" location points at
+/// the crate rather than at the comparison the user wrote.
+#[test]
+fn comparison_panics_name_the_caller() {
+    fn assert_names_caller(result: std::thread::Result<()>, what: &str) {
+        let panic = result.expect_err(what);
+        let message = panic
+            .downcast_ref::<String>()
+            .unwrap_or_else(|| panic!("{what} panicked with a non-String payload"));
+        assert!(
+            message.contains("borrow attempted at tests/diagnostics.rs:"),
+            "{what} did not name the caller: {message}"
+        );
+    }
+
+    let a = lite::inline(1u8);
+    let b = lite::inline(2u8);
+    let held = a.borrow_mut();
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a == b;
+        })),
+        "Inline::eq",
+    );
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a.partial_cmp(&b);
+        })),
+        "Inline::partial_cmp",
+    );
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a.cmp(&b);
+        })),
+        "Inline::cmp",
+    );
+    drop(held);
+
+    let a: Local<u8> = Local::new(1);
+    let b: Local<u8> = Local::new(2);
+    let held = a.borrow_mut();
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a == b;
+        })),
+        "Local::eq",
+    );
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a.partial_cmp(&b);
+        })),
+        "Local::partial_cmp",
+    );
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a.cmp(&b);
+        })),
+        "Local::cmp",
+    );
+    drop(held);
+
+    let a: Shared<u8> = Shared::new(1);
+    let b: Shared<u8> = Shared::new(2);
+    let held = a.borrow_mut();
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a == b;
+        })),
+        "Shared::eq",
+    );
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a.partial_cmp(&b);
+        })),
+        "Shared::partial_cmp",
+    );
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a.cmp(&b);
+        })),
+        "Shared::cmp",
+    );
+    drop(held);
+}
+
+/// `try_eq`/`try_cmp` must record the *caller* as the refused borrow.
+///
+/// They take both shared borrows themselves, in their own `#[track_caller]`
+/// frame. Taking them inside a nested `try_with` closure instead would record a
+/// `wanted` location on a line inside the crate, pointing the reader at the
+/// crate rather than at the comparison they wrote.
+#[test]
+fn try_eq_and_try_cmp_name_the_caller_as_the_refused_borrow() {
+    let a: Local<i32> = Local::new(1);
+    let b: Local<i32> = Local::new(2);
+    let held = a.borrow_mut();
+    let eq = a.try_eq(&b).unwrap_err();
+    assert_eq!(eq.kind(), ConflictKind::Writer);
+    assert_eq!(eq.wanted().map(|l| l.file()), Some(file!()));
+    assert_eq!(
+        a.try_cmp(&b).unwrap_err().wanted().map(|l| l.file()),
+        Some(file!())
+    );
+    drop(held);
+
+    let a: Shared<i32> = Shared::new(1);
+    let b: Shared<i32> = Shared::new(2);
+    let held = a.borrow_mut();
+    assert_eq!(
+        a.try_eq(&b).unwrap_err().wanted().map(|l| l.file()),
+        Some(file!())
+    );
+    assert_eq!(
+        a.try_cmp(&b).unwrap_err().wanted().map(|l| l.file()),
+        Some(file!())
+    );
+    drop(held);
+
+    // A conflict on the *other* cell is reported the same way.
+    let a: Local<i32> = Local::new(1);
+    let b: Local<i32> = Local::new(2);
+    let held = b.borrow_mut();
+    assert_eq!(
+        a.try_eq(&b).unwrap_err().wanted().map(|l| l.file()),
+        Some(file!())
+    );
+    drop(held);
+}
 
 #[test]
 fn panic_names_both_sides_and_the_count() {

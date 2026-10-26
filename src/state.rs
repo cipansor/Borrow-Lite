@@ -14,6 +14,48 @@ mod sealed {
     pub trait Sealed {}
 }
 
+/// The panic used when the reader count would overflow.
+///
+/// Reaching this needs a `ReadGuard` leaked with [`mem::forget`] repeated
+/// `usize::MAX` times - a borrow that is never released. It is checked rather
+/// than left to wrap because a count that wrapped to zero would let
+/// [`State::try_exclusive`] hand out `&mut T` while a `&T` is still alive,
+/// which is exactly the aliasing the cell exists to prevent.
+///
+/// [`mem::forget`]: core::mem::forget
+#[cold]
+#[inline(never)]
+fn reader_count_overflow() -> ! {
+    // Formatted (`{}`) rather than a bare literal so the panic payload is an
+    // `alloc::string::String`, matching the messages `Conflict` produces.
+    panic!(
+        "{}",
+        "lite: too many active reader borrows; the reader counter would overflow. \
+         A `ReadGuard` was leaked (e.g. with `mem::forget`) instead of being dropped"
+    )
+}
+
+/// Increment a non-atomic reader count that must not wrap.
+fn add_local_reader(shared: &Cell<usize>) -> usize {
+    let Some(next) = shared.get().checked_add(1) else {
+        reader_count_overflow()
+    };
+    shared.set(next);
+    next
+}
+
+/// Increment an atomic reader count that must not wrap.
+///
+/// The check mirrors `Arc::clone`'s: the count is only allowed to grow to
+/// `isize::MAX`, and a `fetch_add` past that is undone before the panic so the
+/// cell is left exactly as it was found.
+fn add_atomic_reader(shared: &AtomicUsize) {
+    if shared.fetch_add(1, Ordering::SeqCst) > isize::MAX as usize {
+        shared.fetch_sub(1, Ordering::SeqCst);
+        reader_count_overflow();
+    }
+}
+
 /// The borrow flags of a cell.
 ///
 /// This trait is an implementation detail: it exists so that [`Inner`] can be
@@ -96,8 +138,7 @@ impl State for LocalState {
                 .with_holder(self.holder.get())
                 .with_wanted(wanted));
         }
-        let next = self.shared.get() + 1;
-        self.shared.set(next);
+        let next = add_local_reader(&self.shared);
         let recorder = next == 1;
         if recorder {
             self.holder.set(Some(wanted));
@@ -141,7 +182,7 @@ impl State for LocalState {
     }
 
     fn add_shared(&self) {
-        self.shared.set(self.shared.get() + 1);
+        add_local_reader(&self.shared);
     }
 
     fn end_exclusive(&self) {
@@ -163,6 +204,24 @@ impl State for LocalState {
 /// location: that would be an atomic store on every read borrow, and it would
 /// race (last writer wins). So a readers conflict reports its count but no
 /// holder, which is the one documented gap.
+///
+/// # A brief phantom holder
+///
+/// [`try_exclusive`](State::try_exclusive) has one window in which the writer
+/// word names a writer that is not, in the end, holding the cell. The writer
+/// claims the word with its compare-exchange *before* it reads the reader count,
+/// so if it finds readers waiting it must release the claim. Between those two
+/// steps a reader that loads the word sees the writer's token, and is refused
+/// with a [`Writer`](ConflictKind::Writer) conflict naming it - even though that
+/// writer is about to back off and the cell was, in fact, only ever
+/// read-borrowed. The conflict is not wrong (the reader *was* refused, and the
+/// cell was busy), only the attribution is momentary. Closing it would mean
+/// publishing the claim and the reader count in one atomic step, which needs a
+/// wider word than the two flags this cell is built from; the phantom is
+/// therefore documented rather than removed. See [`Conflict::holder`] for what a
+/// caller should make of a holder.
+///
+/// [`Conflict::holder`]: crate::Conflict::holder
 pub struct AtomicState {
     shared: AtomicUsize,
     writer: AtomicPtr<()>,
@@ -221,7 +280,7 @@ impl State for AtomicState {
                 .with_holder(Self::location_of(seen))
                 .with_wanted(wanted));
         }
-        self.shared.fetch_add(1, Ordering::SeqCst);
+        add_atomic_reader(&self.shared);
         let seen = self.writer.load(Ordering::SeqCst);
         if !seen.is_null() {
             self.shared.fetch_sub(1, Ordering::SeqCst);
@@ -252,6 +311,11 @@ impl State for AtomicState {
         }
         let readers = self.shared.load(Ordering::SeqCst);
         if readers > 0 {
+            // Back off, undoing the claim. Between the successful CAS above and
+            // this store a reader can see our token and be refused with a writer
+            // conflict naming us, though we never hold the cell. That phantom
+            // holder is documented on `AtomicState`; it cannot be closed without
+            // a wider word, and the reader was genuinely refused either way.
             self.writer.store(core::ptr::null_mut(), Ordering::SeqCst);
             return Err(Conflict::new(ConflictKind::Readers)
                 .with_count(readers)
@@ -277,6 +341,90 @@ impl State for AtomicState {
         // null and cannot become non-null while this count is non-zero. `SeqCst`
         // matches the handshake in `try_shared` so the increment cannot be
         // reordered against a writer's claim.
-        self.shared.fetch_add(1, Ordering::SeqCst);
+        add_atomic_reader(&self.shared);
+    }
+}
+
+#[cfg(test)]
+mod overflow_tests {
+    //! Regression tests for the reader-count overflow guards.
+    //!
+    //! A `ReadGuard` leaked with `mem::forget` never releases its borrow, so
+    //! enough of them can drive the count to `usize::MAX`. Without a check the
+    //! next increment wraps to zero, and `try_exclusive` then hands out `&mut T`
+    //! while a `&T` is still alive - the aliasing the cell exists to prevent.
+    //! The counters are driven straight to the limit here rather than by leaking
+    //! `usize::MAX` guards, which is the same state with no memory cost.
+
+    use super::*;
+    use alloc::string::String;
+    extern crate std;
+    use std::panic::{self, AssertUnwindSafe};
+
+    fn here() -> &'static Location<'static> {
+        Location::caller()
+    }
+
+    #[test]
+    fn local_reader_count_overflow_panics_instead_of_wrapping() {
+        let state = LocalState::unborrowed();
+        state.shared.set(usize::MAX);
+
+        let panic = panic::catch_unwind(AssertUnwindSafe(|| {
+            let _ = state.try_shared(here());
+        }))
+        .expect_err("a full reader count must panic, not wrap to zero");
+        let message = panic
+            .downcast_ref::<String>()
+            .expect("lite panics with a formatted String");
+        assert!(message.contains("overflow"), "{message}");
+
+        // The refused increment left the count alone, so the cell still refuses
+        // a writer: the reader that filled the counter is still accounted for.
+        assert_eq!(state.shared.get(), usize::MAX);
+        assert!(state.try_exclusive(here()).is_err());
+    }
+
+    #[test]
+    fn local_add_shared_overflow_panics_instead_of_wrapping() {
+        let state = LocalState::unborrowed();
+        state.shared.set(usize::MAX);
+
+        let panic = panic::catch_unwind(AssertUnwindSafe(|| state.add_shared()))
+            .expect_err("cloning a reader past the counter's limit must panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .expect("lite panics with a formatted String");
+        assert!(message.contains("overflow"), "{message}");
+        assert_eq!(state.shared.get(), usize::MAX);
+    }
+
+    #[test]
+    fn atomic_reader_count_overflow_panics_and_undoes_the_increment() {
+        let state = AtomicState::unborrowed();
+        state.shared.store(usize::MAX, Ordering::SeqCst);
+
+        let panic = panic::catch_unwind(AssertUnwindSafe(|| state.add_shared()))
+            .expect_err("an atomic reader count past isize::MAX must panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .expect("lite panics with a formatted String");
+        assert!(message.contains("overflow"), "{message}");
+        // The increment is undone before the panic, so the cell is left exactly
+        // as it was found - still full, still refusing a writer.
+        assert_eq!(state.shared.load(Ordering::SeqCst), usize::MAX);
+        assert!(state.try_exclusive(here()).is_err());
+    }
+
+    #[test]
+    fn a_reader_count_below_the_limit_still_grows() {
+        // The guard must not fire on the ordinary path.
+        let local = LocalState::unborrowed();
+        assert_eq!(add_local_reader(&local.shared), 1);
+        assert_eq!(local.shared.get(), 1);
+
+        let atomic = AtomicState::unborrowed();
+        add_atomic_reader(&atomic.shared);
+        assert_eq!(atomic.shared.load(Ordering::SeqCst), 1);
     }
 }

@@ -12,7 +12,10 @@
 //!   not a panic and not a second write;
 //! * an observer that removes itself is gone afterwards and does not fire
 //!   again;
-//! * an observer added during a notification does not fire until the next one;
+//! * an observer added during a notification is picked up by that same
+//!   notification (see `tests/observers.rs`
+//!   `notification_handles_a_round_of_new_subscribers`), not deferred to the
+//!   next one;
 //! * `get` reads without notifying, and `set` notifies exactly once like `update`.
 //!
 //! # What is deliberately not here

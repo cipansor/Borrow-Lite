@@ -223,10 +223,15 @@ fn a_cell_allocates_exactly_once() {
     // empty here. It keeps its capacity, so every update after the first is
     // back to two - the cost is one-time, not per call. The amortised number is
     // what matters, and it is pinned by measuring the second update too.
+    //
+    // `<= 3`, not `== 3`: the exact count on the first update depends on the
+    // `Vec` growth strategy (a first push may or may not reallocate), which is
+    // not part of what this test pins. The steady state below is the assertion
+    // that has to be exact.
     let (_, first_update) = allocs(|| observable.update(|v| *v += 1));
-    assert_eq!(
-        first_update, 3,
-        "the first update grows the in-flight id list as well"
+    assert!(
+        first_update <= 3,
+        "the first update grew the in-flight id list by more than expected"
     );
     let (_, with_observers) = allocs(|| observable.update(|v| *v += 1));
     assert_eq!(
@@ -234,5 +239,8 @@ fn a_cell_allocates_exactly_once() {
         "an update with observers allocated in the steady state"
     );
     let (_, again) = allocs(|| observable.update(|v| *v += 1));
-    assert_eq!(again, 2, "the next update allocated a different amount");
+    assert_eq!(
+        with_observers, again,
+        "the next update allocated a different amount"
+    );
 }

@@ -422,6 +422,7 @@ impl<T: PartialEq> PartialEq for Inline<T> {
     /// An `Inline` is never shared, so unlike [`Local`] there is no
     /// self-comparison short-circuit to make: `cell == cell` borrows twice, and
     /// two shared borrows compose, so it still cannot panic on its own.
+    #[track_caller]
     fn eq(&self, other: &Self) -> bool {
         self.with(|a| other.with(|b| a == b))
     }
@@ -435,12 +436,14 @@ impl<T: PartialOrd> PartialOrd for Inline<T> {
     /// As with [`Inline`]'s `PartialEq`, there is no self-comparison
     /// short-circuit to make (an `Inline` is never shared), and two shared
     /// borrows compose, so `cell.partial_cmp(&cell)` cannot panic on its own.
+    #[track_caller]
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         self.with(|a| other.with(|b| a.partial_cmp(b)))
     }
 }
 
 impl<T: Ord> Ord for Inline<T> {
+    #[track_caller]
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.with(|a| other.with(|b| a.cmp(b)))
     }
@@ -462,6 +465,7 @@ impl<T: Clone> Clone for Inline<T> {
     /// assert_eq!(cell.with(Vec::len), 3); // independent cells
     /// assert_eq!(copy.with(Vec::len), 4);
     /// ```
+    #[track_caller]
     fn clone(&self) -> Self {
         // `T::clone`, not `.clone()`: a guard is now `Clone` too, and cloning
         // the guard would hand back the same cell rather than a copy of it.
@@ -647,12 +651,14 @@ impl<T: ?Sized> Deref for Shared<T> {
 }
 
 impl<T: ?Sized> Clone for Local<T> {
+    #[track_caller]
     fn clone(&self) -> Self {
         Self(Rc::clone(&self.0))
     }
 }
 
 impl<T: ?Sized> Clone for Shared<T> {
+    #[track_caller]
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
@@ -672,6 +678,7 @@ impl<T: PartialEq> PartialEq for Local<T> {
     /// `Rc<RefCell<f64>>` compared with itself still borrows. The difference is
     /// only observable for an irreflexive payload (a `NaN` compares equal to
     /// itself here and unequal through `Rc`), and it is pinned by a test.
+    #[track_caller]
     fn eq(&self, other: &Self) -> bool {
         if self.ptr_eq(other) {
             return true;
@@ -694,6 +701,7 @@ impl<T: PartialOrd> PartialOrd for Local<T> {
     /// The same one place differs from `Rc`: the self-comparison short-circuit
     /// runs for every `T: PartialOrd`, so an irreflexive payload like `NaN`
     /// compares `Some(Equal)` here and `None` through `Rc<RefCell<T>>`.
+    #[track_caller]
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         if self.ptr_eq(other) {
             return Some(core::cmp::Ordering::Equal);
@@ -703,6 +711,7 @@ impl<T: PartialOrd> PartialOrd for Local<T> {
 }
 
 impl<T: Ord> Ord for Local<T> {
+    #[track_caller]
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         if self.ptr_eq(other) {
             return core::cmp::Ordering::Equal;
@@ -717,6 +726,7 @@ impl<T: PartialEq + Sync> PartialEq for Shared<T> {
     /// See [`Local`]'s `PartialEq` for the contract, including the one place the
     /// self-comparison short-circuit differs from `Arc`. [`Inner::try_eq`] is
     /// the non-panicking form.
+    #[track_caller]
     fn eq(&self, other: &Self) -> bool {
         if self.ptr_eq(other) {
             return true;
@@ -733,6 +743,7 @@ impl<T: PartialOrd + Sync> PartialOrd for Shared<T> {
     /// See [`Local`]'s `PartialOrd` for the contract, including the one place the
     /// self-comparison short-circuit differs from `Arc`. [`Inner::try_cmp`] is
     /// the non-panicking form.
+    #[track_caller]
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         if self.ptr_eq(other) {
             return Some(core::cmp::Ordering::Equal);
@@ -742,6 +753,7 @@ impl<T: PartialOrd + Sync> PartialOrd for Shared<T> {
 }
 
 impl<T: Ord + Sync> Ord for Shared<T> {
+    #[track_caller]
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         if self.ptr_eq(other) {
             return core::cmp::Ordering::Equal;

@@ -206,9 +206,14 @@ fn clone_under_a_write_borrow_reports_the_conflict() {
         .downcast_ref::<String>()
         .expect("lite panics with a formatted String");
     assert!(message.contains("already mutably borrowed"), "{message}");
-    // The attempt is inside `Inline::clone`, so its location is the crate; the
-    // holder is this test, which is the line worth naming.
+    // `Clone` carries `#[track_caller]`, so the refused attempt is reported at
+    // this test's `cell.clone()` line, not inside the crate. The holder is the
+    // live `borrow_mut()` above, which is the line worth naming.
     assert!(message.contains("held at tests/inline.rs:"), "{message}");
+    assert!(
+        message.contains("borrow attempted at tests/inline.rs:"),
+        "the refused location should be the caller, not the crate: {message}"
+    );
 }
 
 /// `cell! { inline .. }` generates the same accessor surface as the other two

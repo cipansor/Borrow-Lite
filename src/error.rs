@@ -97,6 +97,16 @@ impl Conflict {
     ///   holder becomes `None` rather than naming a borrow that has already been
     ///   released; the [`count`](Self::count) still reports how many readers
     ///   block the write. A writer conflict always names the writer.
+    ///
+    /// One more case is worth stating: on a [`Shared`](crate::Shared) cell a
+    /// [`Writer`](ConflictKind::Writer) conflict can name a writer that was only
+    /// *briefly* claiming the cell. A writer publishes its location and then
+    /// reads the reader count; if it finds readers it releases the claim again, so
+    /// a reader that runs in that window is refused with a conflict naming a
+    /// writer that never held the cell. The refusal is real - the cell was busy -
+    /// but the named location is the momentarily-claiming writer, not a borrow
+    /// that is still alive. The window is documented on the atomic cell's state;
+    /// it is closed only at the cost of a wider atomic word.
     #[must_use]
     pub const fn holder(self) -> Option<&'static Location<'static>> {
         self.holder

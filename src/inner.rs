@@ -593,7 +593,12 @@ impl<T: ?Sized> Inner<T, LocalState> {
         if core::ptr::eq(self, other) {
             return Ok(true);
         }
-        self.try_with(|a| other.try_with(|b| a == b))?
+        // Take both guards here rather than nesting `try_with` closures: the
+        // borrows then happen in this `#[track_caller]` frame, so a refusal
+        // names the caller of `try_eq`, not a line inside this method.
+        let a = self.try_borrow()?;
+        let b = other.try_borrow()?;
+        Ok(*a == *b)
     }
 
     /// Compare two cells, reporting a conflict instead of panicking.
@@ -614,7 +619,9 @@ impl<T: ?Sized> Inner<T, LocalState> {
         if core::ptr::eq(self, other) {
             return Ok(Some(core::cmp::Ordering::Equal));
         }
-        self.try_with(|a| other.try_with(|b| a.partial_cmp(b)))?
+        let a = self.try_borrow()?;
+        let b = other.try_borrow()?;
+        Ok(a.partial_cmp(&b))
     }
 }
 
@@ -735,7 +742,11 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
         if core::ptr::eq(self, other) {
             return Ok(true);
         }
-        self.try_with(|a| other.try_with(|b| a == b))?
+        // Explicit guards, not nested `try_with` closures: see the
+        // single-threaded cell's `try_eq` for why (caller location).
+        let a = self.try_borrow()?;
+        let b = other.try_borrow()?;
+        Ok(*a == *b)
     }
 
     /// Compare two cells, reporting a conflict instead of panicking.
@@ -753,6 +764,8 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
         if core::ptr::eq(self, other) {
             return Ok(Some(core::cmp::Ordering::Equal));
         }
-        self.try_with(|a| other.try_with(|b| a.partial_cmp(b)))?
+        let a = self.try_borrow()?;
+        let b = other.try_borrow()?;
+        Ok(a.partial_cmp(&b))
     }
 }
