@@ -424,7 +424,13 @@ impl<T: PartialEq> PartialEq for Inline<T> {
     /// two shared borrows compose, so it still cannot panic on its own.
     #[track_caller]
     fn eq(&self, other: &Self) -> bool {
-        self.with(|a| other.with(|b| a == b))
+        // Both guards are taken here, not inside nested `with` closures: a
+        // closure's call site is inside this method, so a refusal would name a
+        // line here instead of the caller's `==`. `borrow` is `#[track_caller]`
+        // and this method is too, so `Location::caller()` reaches the user.
+        let a = self.borrow();
+        let b = other.borrow();
+        *a == *b
     }
 }
 
@@ -438,14 +444,18 @@ impl<T: PartialOrd> PartialOrd for Inline<T> {
     /// borrows compose, so `cell.partial_cmp(&cell)` cannot panic on its own.
     #[track_caller]
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        self.with(|a| other.with(|b| a.partial_cmp(b)))
+        let a = self.borrow();
+        let b = other.borrow();
+        a.partial_cmp(&b)
     }
 }
 
 impl<T: Ord> Ord for Inline<T> {
     #[track_caller]
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.with(|a| other.with(|b| a.cmp(b)))
+        let a = self.borrow();
+        let b = other.borrow();
+        a.cmp(&b)
     }
 }
 
@@ -683,7 +693,9 @@ impl<T: PartialEq> PartialEq for Local<T> {
         if self.ptr_eq(other) {
             return true;
         }
-        self.with(|a| other.with(|b| a == b))
+        let a = self.borrow();
+        let b = other.borrow();
+        *a == *b
     }
 }
 
@@ -706,7 +718,9 @@ impl<T: PartialOrd> PartialOrd for Local<T> {
         if self.ptr_eq(other) {
             return Some(core::cmp::Ordering::Equal);
         }
-        self.with(|a| other.with(|b| a.partial_cmp(b)))
+        let a = self.borrow();
+        let b = other.borrow();
+        a.partial_cmp(&b)
     }
 }
 
@@ -716,7 +730,9 @@ impl<T: Ord> Ord for Local<T> {
         if self.ptr_eq(other) {
             return core::cmp::Ordering::Equal;
         }
-        self.with(|a| other.with(|b| a.cmp(b)))
+        let a = self.borrow();
+        let b = other.borrow();
+        a.cmp(&b)
     }
 }
 
@@ -731,7 +747,9 @@ impl<T: PartialEq + Sync> PartialEq for Shared<T> {
         if self.ptr_eq(other) {
             return true;
         }
-        self.with(|a| other.with(|b| a == b))
+        let a = self.borrow();
+        let b = other.borrow();
+        *a == *b
     }
 }
 
@@ -748,7 +766,9 @@ impl<T: PartialOrd + Sync> PartialOrd for Shared<T> {
         if self.ptr_eq(other) {
             return Some(core::cmp::Ordering::Equal);
         }
-        self.with(|a| other.with(|b| a.partial_cmp(b)))
+        let a = self.borrow();
+        let b = other.borrow();
+        a.partial_cmp(&b)
     }
 }
 
@@ -758,7 +778,9 @@ impl<T: Ord + Sync> Ord for Shared<T> {
         if self.ptr_eq(other) {
             return core::cmp::Ordering::Equal;
         }
-        self.with(|a| other.with(|b| a.cmp(b)))
+        let a = self.borrow();
+        let b = other.borrow();
+        a.cmp(&b)
     }
 }
 

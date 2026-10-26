@@ -250,12 +250,14 @@ macro_rules! cell {
             $(
                 #[doc = concat!("Borrow `", stringify!($field), "` shared.")]
                 #[must_use]
+                #[track_caller]
                 pub fn $field(&self) -> impl ::core::ops::Deref<Target = $ty> + '_ {
                     $crate::__macro_support::ReadGuard::map(self.0.borrow(), |d| &d.$field)
                 }
 
                 #[doc = concat!("Borrow `", stringify!($field), "` exclusively.")]
                 #[must_use]
+                #[track_caller]
                 pub fn $set(&self) -> impl ::core::ops::DerefMut<Target = $ty> + '_ {
                     $crate::__macro_support::WriteGuard::map(self.0.borrow_mut(), |d| &mut d.$field)
                 }

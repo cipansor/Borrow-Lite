@@ -1105,9 +1105,90 @@ mod unobserve_contract {
             Some(true),
             "an earlier round's observer is still registered"
         );
-        // Four live: id 1, id 2, the id the adder added, and id 0 until it is
-        // removed - the count sees the guard-held observers too.
-        assert_eq!(counted.with(|c| *c), Some(4));
+        // Three live: id 1, id 2 and the id the adder added. id 0 is held by
+        // the guard but was queued for removal, and `observer_count` reports
+        // *effective* subscriptions, so an accepted removal is not counted even
+        // though it is applied only when the notification ends.
+        assert_eq!(counted.with(|c| *c), Some(3));
+    }
+
+    /// `observer_count` counts *effective* subscriptions, so an accepted
+    /// `unobserve` stops being counted as soon as it returns `true` - even
+    /// though the removal is only applied when the notification ends.
+    ///
+    /// The count and `unobserve` therefore agree at every point a caller can
+    /// observe: once `unobserve` says the observer is gone, the count no longer
+    /// includes it. The observer may still *run* in the round that is in
+    /// progress (a queued removal does not cancel a call already in flight), but
+    /// it is no longer subscribed, and the count is a count of subscriptions.
+    /// This test fails if `observer_count` goes back to `list + in_flight`,
+    /// which double-counts a queued removal until the notification ends.
+    #[test]
+    fn observer_count_excludes_a_queued_removal() {
+        let value = Observable::new(0i32);
+        let seen = Observable::new(Vec::new());
+
+        // id 0: removes id 1 during the round, then reports the count.
+        let remover = value.clone();
+        let seen_after = seen.clone();
+        value.observe(move |_| {
+            let ok = remover.unobserve(1);
+            seen_after.update(|s| s.push((ok, remover.observer_count())));
+        });
+        // id 1: the observer that gets queued for removal. It still runs.
+        let ran = Observable::new(false);
+        let ran_handle = ran.clone();
+        value.observe(move |_| ran_handle.update(|r| *r = true));
+
+        value.notify();
+
+        // The removal was accepted and took effect for the count immediately:
+        // only the remover is left, so the count is 1 and not 2.
+        assert_eq!(
+            seen.with(|s| s.clone()),
+            vec![(true, 1)],
+            "observer_count must not count a queued removal"
+        );
+        // A queued removal does not cancel the call already in flight.
+        assert!(
+            ran.with(|r| *r),
+            "a queued removal must not stop the running observer"
+        );
+        // And the count is the same after the notification settles.
+        assert_eq!(value.observer_count(), 1);
+        value.clear_observers(); // break the `Rc` cycles the observers hold
+    }
+
+    /// The count drops the moment `unobserve` accepts, from inside the round.
+    /// This is the direct companion to the test above, on the in-flight id
+    /// rather than a list id: it pins that both sources are filtered.
+    #[test]
+    fn observer_count_excludes_a_queued_removal_of_an_in_flight_observer() {
+        let value = Observable::new(0i32);
+        let seen = Observable::new(Vec::new());
+
+        // id 0 is the observer that will be removed; it runs first in the round.
+        value.observe(|_| {});
+        // id 1 runs next, still inside the same round, when id 0 has already run
+        // and sits in the guard rather than the list. It removes id 0.
+        let remover = value.clone();
+        let seen_after = seen.clone();
+        value.observe(move |_| {
+            let ok = remover.unobserve(0);
+            seen_after.update(|s| s.push((ok, remover.observer_count())));
+        });
+
+        value.notify();
+
+        // id 0 is in flight, not in the list, and was just queued for removal,
+        // so the count is 1 (id 1) rather than 2.
+        assert_eq!(
+            seen.with(|s| s.clone()),
+            vec![(true, 1)],
+            "a queued removal of an in-flight observer must not be counted"
+        );
+        assert_eq!(value.observer_count(), 1);
+        value.clear_observers(); // break the `Rc` cycles the observers hold
     }
 
     /// An observer subscribed *during* a notification sits in the list, not in

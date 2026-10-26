@@ -93,6 +93,100 @@ fn comparison_panics_name_the_caller() {
     drop(held);
 }
 
+/// A conflict on the *right-hand* cell must blame the caller too.
+///
+/// `eq`/`partial_cmp`/`cmp` used to compare through nested `with` closures. The
+/// outer borrow inherits the comparison caller through `#[track_caller]`, but
+/// the inner one runs from a closure whose call site is inside `src/lib.rs`, so
+/// when the right-hand cell held a writer the refused-borrow location named an
+/// internal `other.with` call rather than the user's `a == b`. The fix takes
+/// both guards directly in the tracked method, and this is the test that fails
+/// if the nested closures come back - the left-hand case above passes either
+/// way, which is why the bug survived it.
+#[test]
+fn a_right_hand_comparison_conflict_names_the_caller() {
+    fn assert_names_caller(result: std::thread::Result<()>, what: &str) {
+        let panic = result.expect_err(what);
+        let message = panic
+            .downcast_ref::<String>()
+            .unwrap_or_else(|| panic!("{what} panicked with a non-String payload"));
+        assert!(
+            message.contains("borrow attempted at tests/diagnostics.rs:"),
+            "{what} blamed the crate instead of the caller: {message}"
+        );
+    }
+
+    // `Inline`: the writer is held on the right-hand cell.
+    let a = borrow_lite::inline(1u8);
+    let b = borrow_lite::inline(2u8);
+    let held = b.borrow_mut();
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a == b;
+        })),
+        "Inline::eq with the writer on the right",
+    );
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a.partial_cmp(&b);
+        })),
+        "Inline::partial_cmp with the writer on the right",
+    );
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a.cmp(&b);
+        })),
+        "Inline::cmp with the writer on the right",
+    );
+    drop(held);
+
+    let a: Local<u8> = Local::new(1);
+    let b: Local<u8> = Local::new(2);
+    let held = b.borrow_mut();
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a == b;
+        })),
+        "Local::eq with the writer on the right",
+    );
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a.partial_cmp(&b);
+        })),
+        "Local::partial_cmp with the writer on the right",
+    );
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a.cmp(&b);
+        })),
+        "Local::cmp with the writer on the right",
+    );
+    drop(held);
+
+    let a: Shared<u8> = Shared::new(1);
+    let b: Shared<u8> = Shared::new(2);
+    let held = b.borrow_mut();
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a == b;
+        })),
+        "Shared::eq with the writer on the right",
+    );
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a.partial_cmp(&b);
+        })),
+        "Shared::partial_cmp with the writer on the right",
+    );
+    assert_names_caller(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = a.cmp(&b);
+        })),
+        "Shared::cmp with the writer on the right",
+    );
+    drop(held);
+}
+
 /// `try_eq`/`try_cmp` must record the *caller* as the refused borrow.
 ///
 /// They take both shared borrows themselves, in their own `#[track_caller]`

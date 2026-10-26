@@ -100,6 +100,92 @@ fn accessors_return_the_same_conflict_type_as_a_plain_borrow() {
     assert!(write(&stats).is_ok());
 }
 
+/// A refused field access must blame the *user's* call, not the generated
+/// accessor body.
+///
+/// The accessors are ordinary functions calling `Inner::borrow`/
+/// `Inner::borrow_mut`, which record their immediate caller as `wanted`. Without
+/// `#[track_caller]` on the generated accessor that immediate caller is the
+/// accessor body inside the macro expansion, so the panic names the `cell!`
+/// invocation line instead of the `stats.name_mut()` the user wrote.
+///
+/// Because `cell!` expands inside *this* crate the file name alone cannot tell
+/// the two apart - both are in `tests/cell_macro.rs` - so the assertion pins the
+/// line: `line!()` and the accessor call are both tokens of the macro below, and
+/// both resolve to the single line the macro is invoked on.
+#[test]
+fn a_refused_field_access_names_the_caller() {
+    /// Panic line from a `borrow attempted at <file>:<line>:<col>` message.
+    fn reported_line(message: &str) -> u32 {
+        message
+            .split("borrow attempted at ")
+            .nth(1)
+            .expect("no location in the message")
+            .split(':')
+            .nth(1)
+            .expect("no line in the location")
+            .parse()
+            .expect("the line is not a number")
+    }
+
+    /// Call `$receiver.$method()` and require the refusal to name this line.
+    macro_rules! refused_at_this_line {
+        ($what:expr, $receiver:expr, $method:ident) => {{
+            let expected = line!();
+            let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+                let _ = $receiver.$method();
+            }));
+            let panic = result.expect_err($what);
+            let message = panic
+                .downcast_ref::<String>()
+                .cloned()
+                .unwrap_or_else(|| String::from("<non-String panic payload>"));
+            assert!(
+                message.contains("borrow attempted at tests/cell_macro.rs:"),
+                "{} blamed a location outside this file: {message}",
+                $what
+            );
+            assert_eq!(
+                reported_line(&message),
+                expected,
+                "{} blamed the generated accessor instead of the call: {message}",
+                $what
+            );
+        }};
+    }
+
+    // A write accessor refused by a held read.
+    let stats = Stats::new(1, String::from("a"));
+    let held = stats.count();
+    refused_at_this_line!("Stats::name_mut", stats, name_mut);
+    drop(held);
+
+    // A read accessor refused by a held write.
+    let held = stats.count_mut();
+    refused_at_this_line!("Stats::name", stats, name);
+    drop(held);
+
+    // The `local` shape expands the same accessors.
+    let tally = Tally::new(0);
+    let held = tally.total();
+    refused_at_this_line!("Tally::total_mut", tally, total_mut);
+    drop(held);
+
+    // And the `inline` shape.
+    cell! { inline Counter, CounterData { value: u32 => value_mut } }
+    let counter = Counter::new(0);
+    let held = counter.value();
+    refused_at_this_line!("Counter::value_mut", counter, value_mut);
+    drop(held);
+
+    // `wanted` is the same location the non-panicking path reports.
+    let stats = Stats::new(1, String::from("a"));
+    let held = stats.count();
+    let err = stats.handle().try_borrow_mut().unwrap_err();
+    assert_eq!(err.wanted().map(|l| l.file()), Some(file!()));
+    drop(held);
+}
+
 #[test]
 fn the_macro_accepts_doc_comments_and_derives_them() {
     // A doc comment on the handle and a per-field one both survive.

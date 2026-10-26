@@ -33,8 +33,8 @@ struct Subs<T> {
     /// still registered - the round in progress and the rounds already run.
     /// Kept as ids rather than a count so [`unobserve`](Observable::unobserve)
     /// can tell a live observer from an unknown id while a notification is in
-    /// flight; the length is what keeps
-    /// [`observer_count`](Observable::observer_count) honest. A
+    /// flight, and so [`observer_count`](Observable::observer_count) can leave
+    /// out the ones already queued for removal. A
     /// [`clear_observers`](Observable::clear_observers) during the notification
     /// clears it, because those observers are no longer registered.
     in_flight: Vec<ObserverId>,
@@ -223,10 +223,24 @@ impl<T> Observable<T> {
     /// Correct from inside an observer too: the observers of the round in
     /// progress have been taken out of the list, so they are counted separately
     /// rather than reported as zero.
+    ///
+    /// The count is of *effective* subscriptions, so it agrees with what
+    /// [`unobserve`](Self::unobserve) has already told the caller. An accepted
+    /// removal is queued rather than applied while a notification is in flight,
+    /// but it is not counted from the moment `unobserve` returns `true` - the
+    /// observer may still run in the round that is in progress, yet it is no
+    /// longer subscribed. A [`clear_observers`](Self::clear_observers) during a
+    /// notification is likewise reflected immediately.
     #[must_use]
     pub fn observer_count(&self) -> usize {
-        self.subs
-            .with(|subs| subs.observers.len() + subs.in_flight.len())
+        self.subs.with(|subs| {
+            subs.observers
+                .iter()
+                .map(|(id, _)| *id)
+                .chain(subs.in_flight.iter().copied())
+                .filter(|id| !subs.pending_removal.contains(id))
+                .count()
+        })
     }
 
     /// Drop every subscription.
