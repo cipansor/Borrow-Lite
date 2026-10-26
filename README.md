@@ -1089,12 +1089,19 @@ observable`, 200,000 operations, two runs:
 | `update`, 16 observers | 17.3 ms | 86 ns |
 | `Local::with_mut` (reference) | 196 µs | 1 ns |
 | `observe` + `unobserve` | 1.95 ms | 10 ns |
+| `observer_count`, 0 observers | 0.83 ms | 4 ns |
+| `observer_count`, 64 observers | 0.79 ms | 4 ns |
 | observer's `try_update`, refused | 17.1 ms | 85 ns |
 | observer's `with`, allowed | 17.2 ms | 86 ns |
 
 Reading is free. `with` costs the same as a bare `Local::with` whether zero or
 sixteen observers are registered - registering observers does not slow down the
 read path, because `with` only takes a borrow.
+
+`observer_count` is the two lengths when no removal is queued, so it is flat
+across the observer count (4 ns at both 0 and 64 observers, the borrow around it
+rather than the count). It scans only while a removal is queued mid-notification,
+which is what lets it leave out an observer `unobserve` has already removed.
 
 The time table hides a second, sharper fact that a counting allocator makes
 visible (`tests/allocations.rs`, which installs a `GlobalAlloc` and counts):

@@ -231,9 +231,17 @@ impl<T> Observable<T> {
     /// observer may still run in the round that is in progress, yet it is no
     /// longer subscribed. A [`clear_observers`](Self::clear_observers) during a
     /// notification is likewise reflected immediately.
+    ///
+    /// Outside a notification - and inside one until a removal is queued - there
+    /// is nothing to leave out, so the count is the two lengths and the scan is
+    /// skipped. It only runs while a removal is queued, which cannot outlive the
+    /// notification that queued it.
     #[must_use]
     pub fn observer_count(&self) -> usize {
         self.subs.with(|subs| {
+            if subs.pending_removal.is_empty() {
+                return subs.observers.len() + subs.in_flight.len();
+            }
             subs.observers
                 .iter()
                 .map(|(id, _)| *id)

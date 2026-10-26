@@ -13,6 +13,8 @@
 //! * `observable/churn` - `observe` then `unobserve`, the subscription path
 //! * `observable/reentrant` - `notify` from inside an observer, the path with
 //!   the round cap
+//! * `observable/count` - `observer_count` at 0, 1, 4, 16 and 64 observers,
+//!   flat while no removal is queued and a scan only after one is
 //!
 //! Run with `cargo bench --bench observable`.
 
@@ -341,6 +343,55 @@ fn lifecycle_path(c: &mut Criterion) {
     group.finish();
 }
 
+/// The cost of the count, which is the two lengths when nothing is queued and a
+/// scan only after an `unobserve` has queued a removal.
+///
+/// A flat line across the observer counts is the O(1) fast path; a slope is the
+/// scan. The scan branch exists only *inside* a notification, so it is measured
+/// there, as the difference between a round that counts and the same round that
+/// does not.
+fn count_path(c: &mut Criterion) {
+    let mut group = c.benchmark_group("observable/count");
+    group.sample_size(50);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(3));
+
+    for &observers in &[0usize, 1, 4, 16, 64] {
+        let observable: Observable<u64> = Observable::new(0);
+        register(&observable, observers);
+        group.bench_with_input(
+            BenchmarkId::new("observer_count", observers),
+            &observers,
+            |b, _| b.iter(|| black_box(observable.observer_count())),
+        );
+    }
+
+    // The scan branch needs a removal queued, which only happens mid-round, so
+    // the count is taken from an observer in that round. `with_count` and
+    // `without_count` differ by exactly one `observer_count` call, and the
+    // difference is the scan.
+    for with_count in [false, true] {
+        let observable: Observable<u64> = Observable::new(0);
+        register(&observable, 64);
+        let queued = observable.clone();
+        let target = observable.clone();
+        observable.observe(move |_| {
+            let id = queued.observe(|_| {});
+            black_box(queued.unobserve(id));
+            if with_count {
+                black_box(target.observer_count());
+            }
+        });
+        let label = if with_count {
+            "observer_count/queued (scan)"
+        } else {
+            "observer_count/queued (reference)"
+        };
+        group.bench_function(label, |b| b.iter(|| observable.notify()));
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     read_path,
@@ -348,6 +399,7 @@ criterion_group!(
     churn_path,
     reentrant_path,
     refused_path,
-    lifecycle_path
+    lifecycle_path,
+    count_path
 );
 criterion_main!(benches);
