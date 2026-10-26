@@ -1,13 +1,13 @@
 [package]
-name = "lite"
+name = "borrow_lite"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Rc<RefCell<T>> and Arc<RwLock<T>> ergonomics without the pain: one small API, try-first borrowing, and conflicts that tell you who borrowed what and where."
 authors = ["Yayasan Pesantren Cipansor and contributors"]
 license = "Apache-2.0"
-repository = "https://github.com/cipansor/lite"
-documentation = "https://docs.rs/lite"
+repository = "https://github.com/cipansor/borrow_lite"
+documentation = "https://docs.rs/borrow_lite"
 keywords = ["refcell", "rwlock", "interior-mutability", "ergonomics", "rc"]
 categories = ["rust-patterns", "memory-management", "no-std"]
 readme = "README.md"
@@ -21,7 +21,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-# Adds `lite::wait`, an adaptive retry helper that yields. The crate is
+# Adds `borrow_lite::wait`, an adaptive retry helper that yields. The crate is
 # `no_std` by default, and `thread::yield_now` needs `std`, so the helper is
 # behind this feature. It exists because the benchmarks found that yielding
 # beats both spinning and `parking_lot::RwLock` under contention, yet the

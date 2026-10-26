@@ -21,8 +21,8 @@
 use std::hint::black_box;
 use std::time::Duration;
 
+use borrow_lite::{Observable, local};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use lite::{Observable, local};
 
 const OBSERVER_COUNTS: [usize; 4] = [0, 1, 4, 16];
 const ITERS: u64 = 200_000;

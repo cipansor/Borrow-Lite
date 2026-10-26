@@ -5,7 +5,7 @@
 //! and line of the borrow in the way. These tests pin all three of those
 //! claims: behaviour, diagnostics, and auto traits.
 
-use lite::{ConflictKind, Inline, inline};
+use borrow_lite::{ConflictKind, Inline, inline};
 
 #[test]
 fn borrow_and_borrow_mut_work() {
@@ -142,29 +142,32 @@ fn is_not_sync() {
 /// through both and compares, so a drift in the semantics shows up here.
 #[test]
 fn behaviour_matches_refcell() {
-    let lite = Inline::new(vec![1i32, 2, 3]);
+    let borrow_lite = Inline::new(vec![1i32, 2, 3]);
     let std_cell = std::cell::RefCell::new(vec![1i32, 2, 3]);
 
-    lite.borrow_mut().push(4);
+    borrow_lite.borrow_mut().push(4);
     std_cell.borrow_mut().push(4);
-    assert_eq!(*lite.borrow(), *std_cell.borrow());
+    assert_eq!(*borrow_lite.borrow(), *std_cell.borrow());
 
-    assert_eq!(lite.borrow().len(), std_cell.borrow().len());
-    assert_eq!(lite.try_borrow().is_ok(), std_cell.try_borrow().is_ok());
+    assert_eq!(borrow_lite.borrow().len(), std_cell.borrow().len());
     assert_eq!(
-        lite.try_borrow_mut().is_err(),
+        borrow_lite.try_borrow().is_ok(),
+        std_cell.try_borrow().is_ok()
+    );
+    assert_eq!(
+        borrow_lite.try_borrow_mut().is_err(),
         std_cell.try_borrow_mut().is_err()
     );
 
     // Both refuse an exclusive borrow under a live shared borrow, and neither
     // is left poisoned by the refusal.
     {
-        let _a = lite.borrow();
+        let _a = borrow_lite.borrow();
         let _b = std_cell.borrow();
-        assert!(lite.try_borrow_mut().is_err());
+        assert!(borrow_lite.try_borrow_mut().is_err());
         assert!(std_cell.try_borrow_mut().is_err());
     }
-    assert_eq!(*lite.borrow_mut(), *std_cell.borrow_mut());
+    assert_eq!(*borrow_lite.borrow_mut(), *std_cell.borrow_mut());
 }
 
 /// `Inline` is the one cell that pays no allocation at all. The count is the
@@ -179,7 +182,7 @@ fn no_heap_indirection() {
     // allocation count in `tests/allocations.rs` is the real proof; this only
     // pins the shape.
     assert!(size_of::<Inline<u64>>() >= size_of::<u64>());
-    assert_eq!(size_of::<lite::Local<u64>>(), size_of::<usize>());
+    assert_eq!(size_of::<borrow_lite::Local<u64>>(), size_of::<usize>());
 }
 
 /// `Inline::clone` copies the value, like `RefCell::clone`, rather than sharing
@@ -204,7 +207,7 @@ fn clone_under_a_write_borrow_reports_the_conflict() {
         .expect_err("clone under an exclusive borrow must panic");
     let message = err
         .downcast_ref::<String>()
-        .expect("lite panics with a formatted String");
+        .expect("borrow_lite panics with a formatted String");
     assert!(message.contains("already mutably borrowed"), "{message}");
     // `Clone` carries `#[track_caller]`, so the refused attempt is reported at
     // this test's `cell.clone()` line, not inside the crate. The holder is the
@@ -220,7 +223,7 @@ fn clone_under_a_write_borrow_reports_the_conflict() {
 /// shapes; this pins that the keyword is wired up.
 #[test]
 fn the_macro_accepts_the_inline_keyword() {
-    use lite::cell;
+    use borrow_lite::cell;
 
     cell! {
         inline Counter, CounterData {

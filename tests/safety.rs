@@ -8,7 +8,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use lite::{Local, Observable, Shared, shared};
+use borrow_lite::{Local, Observable, Shared, shared};
 
 /// A panic inside `with_mut` must not leave the cell borrowed.
 #[test]
@@ -127,13 +127,13 @@ const _: () = {
 /// a `WriteGuard`.
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    use lite::Inline;
-    use lite::state::LocalState;
+    use borrow_lite::Inline;
+    use borrow_lite::state::LocalState;
 
     assert!(core::mem::size_of::<Inline<u64>>() == 32);
     assert!(core::mem::size_of::<std::cell::RefCell<u64>>() == 16);
-    assert!(core::mem::size_of::<lite::ReadGuard<'static, u64, LocalState>>() == 24);
-    assert!(core::mem::size_of::<lite::WriteGuard<'static, u64, LocalState>>() == 16);
+    assert!(core::mem::size_of::<borrow_lite::ReadGuard<'static, u64, LocalState>>() == 24);
+    assert!(core::mem::size_of::<borrow_lite::WriteGuard<'static, u64, LocalState>>() == 16);
 };
 
 /// The regression for the bug this file found: a panicking observer used to
@@ -204,7 +204,7 @@ fn a_panicking_observer_does_not_take_the_rest_of_the_round_with_it() {
 mod try_forms_do_not_swallow_observer_panics {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    use lite::Observable;
+    use borrow_lite::Observable;
 
     #[test]
     fn a_panicking_observer_propagates_out_of_every_try_form() {
@@ -292,7 +292,7 @@ mod try_forms_do_not_swallow_observer_panics {
 mod map_is_panic_safe {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    use lite::{Local, ReadGuard, Shared, WriteGuard, shared};
+    use borrow_lite::{Local, ReadGuard, Shared, WriteGuard, shared};
 
     #[test]
     fn a_panic_in_read_guard_map_releases_the_borrow() {

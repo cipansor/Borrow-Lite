@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use lite::{Conflict, Shared, shared};
+use borrow_lite::{Conflict, Shared, shared};
 
 #[test]
 fn exclusive_borrows_are_never_held_by_two_threads_at_once() {
@@ -116,7 +116,7 @@ fn a_conflict_from_another_thread_is_an_error_not_a_panic() {
 
         ready_rx.recv().unwrap();
         let conflict: Conflict = cell.try_borrow().unwrap_err();
-        assert_eq!(conflict.kind(), lite::ConflictKind::Writer);
+        assert_eq!(conflict.kind(), borrow_lite::ConflictKind::Writer);
         go_tx.send(()).unwrap();
         worker.join().unwrap();
     });
@@ -271,7 +271,7 @@ fn a_writer_conflict_always_names_the_writer() {
         scope.spawn(|| {
             for _ in 0..64 {
                 let conflict = reader.try_borrow().expect_err("the writer holds the cell");
-                assert_eq!(conflict.kind(), lite::ConflictKind::Writer);
+                assert_eq!(conflict.kind(), borrow_lite::ConflictKind::Writer);
                 assert!(
                     conflict.holder().is_some(),
                     "a writer conflict did not name the writer"

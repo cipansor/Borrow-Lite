@@ -30,7 +30,7 @@ fn reader_count_overflow() -> ! {
     // `alloc::string::String`, matching the messages `Conflict` produces.
     panic!(
         "{}",
-        "lite: too many active reader borrows; the reader counter would overflow. \
+        "borrow_lite: too many active reader borrows; the reader counter would overflow. \
          A `ReadGuard` was leaked (e.g. with `mem::forget`) instead of being dropped"
     )
 }
@@ -376,7 +376,7 @@ mod overflow_tests {
         .expect_err("a full reader count must panic, not wrap to zero");
         let message = panic
             .downcast_ref::<String>()
-            .expect("lite panics with a formatted String");
+            .expect("borrow_lite panics with a formatted String");
         assert!(message.contains("overflow"), "{message}");
 
         // The refused increment left the count alone, so the cell still refuses
@@ -394,7 +394,7 @@ mod overflow_tests {
             .expect_err("cloning a reader past the counter's limit must panic");
         let message = panic
             .downcast_ref::<String>()
-            .expect("lite panics with a formatted String");
+            .expect("borrow_lite panics with a formatted String");
         assert!(message.contains("overflow"), "{message}");
         assert_eq!(state.shared.get(), usize::MAX);
     }
@@ -408,7 +408,7 @@ mod overflow_tests {
             .expect_err("an atomic reader count past isize::MAX must panic");
         let message = panic
             .downcast_ref::<String>()
-            .expect("lite panics with a formatted String");
+            .expect("borrow_lite panics with a formatted String");
         assert!(message.contains("overflow"), "{message}");
         // The increment is undone before the panic, so the cell is left exactly
         // as it was found - still full, still refusing a writer.

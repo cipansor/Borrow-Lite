@@ -22,7 +22,7 @@
 use core::cell::Cell;
 use std::alloc::{GlobalAlloc, Layout, System};
 
-use lite::{Inline, Local, Observable, shared};
+use borrow_lite::{Inline, Local, Observable, shared};
 
 struct Counting;
 

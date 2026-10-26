@@ -4,7 +4,7 @@
 //! this file counts the two sides and checks that a claimed reduction is real -
 //! and that a case which is *longer* stays reported as longer. The snippets are
 //! the idiomatic form of each side (`RefCell`/`Rc<RefCell>`/`Arc<RwLock>` on the
-//! left, `lite` on the right); if one side is written badly, the numbers below
+//! left, `borrow_lite` on the right); if one side is written badly, the numbers below
 //! move and this test fails, which is the point.
 //!
 //! It counts source characters of the non-blank, non-comment lines. That is a
@@ -27,7 +27,7 @@ fn reduction(old: &str, new: &str) -> f64 {
     (o as f64 - n as f64) / o as f64
 }
 
-/// Cases where `lite` is shorter by half or more - the headline claim.
+/// Cases where `borrow_lite` is shorter by half or more - the headline claim.
 #[test]
 fn half_or_more_shorter_where_std_is_awkward() {
     // Swapping two cells. `RefCell::swap` takes two `&self`, so the std form has
@@ -35,13 +35,13 @@ fn half_or_more_shorter_where_std_is_awkward() {
     let std_swap = r#"
         std::mem::swap(&mut *a.borrow_mut(), &mut *b.borrow_mut());
     "#;
-    let lite_swap = r#"
+    let borrow_swap = r#"
         a.swap(&b);
     "#;
     assert!(
-        reduction(std_swap, lite_swap) >= 0.75,
+        reduction(std_swap, borrow_swap) >= 0.75,
         "swap: {:.0}%",
-        100.0 * reduction(std_swap, lite_swap)
+        100.0 * reduction(std_swap, borrow_swap)
     );
 
     // Wiring an observer that cannot re-enter itself. The std form has to drain
@@ -57,28 +57,28 @@ fn half_or_more_shorter_where_std_is_awkward() {
           let taken: Vec<_> = obs.borrow_mut().drain(..).collect();
           for mut f in taken { f(&v); } }
     "#;
-    let lite_observer = r#"
+    let borrow_observer = r#"
         let v = Observable::new(1i32);
         v.observe(|x| println!("{x}"));
         v.update(|x| *x = 2);
     "#;
     assert!(
-        reduction(std_observer, lite_observer) >= 0.70,
+        reduction(std_observer, borrow_observer) >= 0.70,
         "observer: {:.0}%",
-        100.0 * reduction(std_observer, lite_observer)
+        100.0 * reduction(std_observer, borrow_observer)
     );
 
     // Taking the value back out once the handles are gone.
     let std_take = r#"
         let v = Rc::try_unwrap(v).ok().unwrap().into_inner();
     "#;
-    let lite_take = r#"
+    let borrow_take = r#"
         let v = v.into_inner();
     "#;
     assert!(
-        reduction(std_take, lite_take) >= 0.50,
+        reduction(std_take, borrow_take) >= 0.50,
         "into_inner: {:.0}%",
-        100.0 * reduction(std_take, lite_take)
+        100.0 * reduction(std_take, borrow_take)
     );
 
     // Comparing two cells by value. `Rc<RefCell<T>>` needs a `PartialEq` impl
@@ -86,17 +86,17 @@ fn half_or_more_shorter_where_std_is_awkward() {
     let std_eq = r#"
         let same = *a.borrow() == *b.borrow();
     "#;
-    let lite_eq = r#"
+    let borrow_eq = r#"
         let same = a == b;
     "#;
     assert!(
-        reduction(std_eq, lite_eq) >= 0.50,
+        reduction(std_eq, borrow_eq) >= 0.50,
         "eq: {:.0}%",
-        100.0 * reduction(std_eq, lite_eq)
+        100.0 * reduction(std_eq, borrow_eq)
     );
 
     // Reading a value out, closure-free. `get` has no `*` and no guard binding,
-    // so it is shorter than both the `RefCell` guard form and lite's own closure
+    // so it is shorter than both the `RefCell` guard form and borrow_lite's own closure
     // form; the guard form is the tighter of the two, so it is the one that
     // sets the floor.
     let std_get = r#"
@@ -105,18 +105,18 @@ fn half_or_more_shorter_where_std_is_awkward() {
     let closure_get = r#"
         let n = counter.with(|v| *v);
     "#;
-    let lite_get = r#"
+    let borrow_get = r#"
         let n = counter.get();
     "#;
     assert!(
-        reduction(std_get, lite_get) >= 0.15,
+        reduction(std_get, borrow_get) >= 0.15,
         "get vs std guard: {:.0}%",
-        100.0 * reduction(std_get, lite_get)
+        100.0 * reduction(std_get, borrow_get)
     );
     assert!(
-        reduction(closure_get, lite_get) >= 0.20,
+        reduction(closure_get, borrow_get) >= 0.20,
         "get vs closure form: {:.0}%",
-        100.0 * reduction(closure_get, lite_get)
+        100.0 * reduction(closure_get, borrow_get)
     );
 
     // Storing a value, closure-free. Against `RefCell`'s `*c.borrow_mut() = x`
@@ -124,17 +124,17 @@ fn half_or_more_shorter_where_std_is_awkward() {
     let std_set = r#"
         *counter.borrow_mut() = 5;
     "#;
-    let lite_set = r#"
+    let borrow_set = r#"
         counter.set(5);
     "#;
     assert!(
-        reduction(std_set, lite_set) >= 0.20,
+        reduction(std_set, borrow_set) >= 0.20,
         "set: {:.0}%",
-        100.0 * reduction(std_set, lite_set)
+        100.0 * reduction(std_set, borrow_set)
     );
 }
 
-/// Cases where `lite` is *not* shorter, kept honest on purpose.
+/// Cases where `borrow_lite` is *not* shorter, kept honest on purpose.
 #[test]
 fn bare_borrows_are_not_shorter() {
     // A scoped read of a scalar. `RefCell` is already minimal here, so the
@@ -143,26 +143,26 @@ fn bare_borrows_are_not_shorter() {
     let std_read = r#"
         let n = *counter.borrow();
     "#;
-    let lite_read = r#"
+    let borrow_read = r#"
         let n = counter.with(|v| *v);
     "#;
     assert!(
-        reduction(std_read, lite_read) < 0.0,
+        reduction(std_read, borrow_read) < 0.0,
         "a bare read is expected to be longer, not shorter: {:.0}%",
-        100.0 * reduction(std_read, lite_read)
+        100.0 * reduction(std_read, borrow_read)
     );
 
     // Same for a scoped write.
     let std_write = r#"
         *counter.borrow_mut() += 1;
     "#;
-    let lite_write = r#"
+    let borrow_write = r#"
         counter.with_mut(|v| *v += 1);
     "#;
     assert!(
-        reduction(std_write, lite_write) < 0.0,
+        reduction(std_write, borrow_write) < 0.0,
         "a bare write is expected to be longer, not shorter: {:.0}%",
-        100.0 * reduction(std_write, lite_write)
+        100.0 * reduction(std_write, borrow_write)
     );
 
     // The guard forms are the same length as `RefCell`'s, which is the answer
@@ -173,14 +173,14 @@ fn bare_borrows_are_not_shorter() {
         s.count += 1;
         drop(s);
     "#;
-    let lite_guard = r#"
+    let borrow_guard = r#"
         let mut s = stats.borrow_mut();
         s.count += 1;
         drop(s);
     "#;
     assert_eq!(
         chars(std_guard),
-        chars(lite_guard),
+        chars(borrow_guard),
         "the guard forms should be the same length"
     );
 }
@@ -194,11 +194,11 @@ fn the_gap_widens_with_the_number_of_steps() {
         let t = { let s = stats.borrow(); s.count + s.retries };
         { let mut s = stats.borrow_mut(); s.count = t; }
     "#;
-    let lite_two = r#"
+    let borrow_two = r#"
         let t = stats.with(|s| s.count + s.retries);
         stats.with_mut(|s| s.count = t);
     "#;
-    let two = reduction(std_two, lite_two);
+    let two = reduction(std_two, borrow_two);
     assert!(two >= 0.20, "two steps: {:.0}%", 100.0 * two);
 
     // A whole observable store - typed accessors, change notification, no
@@ -229,7 +229,7 @@ fn the_gap_widens_with_the_number_of_steps() {
             }
         }
     "#;
-    let lite_store = r#"
+    let borrow_store = r#"
         cell! {
             shared Store, StoreData {
                 count: usize => count_mut,
@@ -242,7 +242,7 @@ fn the_gap_widens_with_the_number_of_steps() {
             }
         }
     "#;
-    let store = reduction(std_store, lite_store);
+    let store = reduction(std_store, borrow_store);
     assert!(store >= 0.60, "observable store: {:.0}%", 100.0 * store);
 }
 
@@ -256,12 +256,12 @@ fn observable_get_is_shorter_than_the_closure_form() {
     let closure_read = r#"
         let current = source.with(|v| v.clone());
     "#;
-    let lite_read = r#"
+    let borrow_read = r#"
         let current = source.get();
     "#;
     assert!(
-        reduction(closure_read, lite_read) >= 0.20,
+        reduction(closure_read, borrow_read) >= 0.20,
         "observable get: {:.0}%",
-        100.0 * reduction(closure_read, lite_read)
+        100.0 * reduction(closure_read, borrow_read)
     );
 }

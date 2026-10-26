@@ -8,7 +8,7 @@
 
 #![cfg(feature = "std")]
 
-use lite::{Conflict, Local, Shared, local, retry, shared, wait};
+use borrow_lite::{Conflict, Local, Shared, local, retry, shared, wait};
 
 #[test]
 fn wait_is_callable_and_cheap_when_uncontended() {

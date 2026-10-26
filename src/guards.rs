@@ -47,7 +47,7 @@ impl<'a, T: ?Sized, S: State> ReadGuard<'a, T, S> {
     /// again once the panic is caught.
     ///
     /// ```
-    /// use lite::{Local, ReadGuard};
+    /// use borrow_lite::{Local, ReadGuard};
     ///
     /// let cell = Local::new((1u32, String::from("x")));
     /// let second: ReadGuard<'_, str, _> = ReadGuard::map(cell.borrow(), |t| t.1.as_str());
@@ -110,7 +110,7 @@ impl<T: ?Sized, S: State> Clone for ReadGuard<'_, T, S> {
     /// the same contract as [`Ref::clone`](core::cell::Ref::clone).
     ///
     /// ```
-    /// use lite::local;
+    /// use borrow_lite::local;
     ///
     /// let cell = local(vec![1, 2, 3]);
     /// let first = cell.borrow();
@@ -165,7 +165,7 @@ impl<'a, T: ?Sized, S: State> WriteGuard<'a, T, S> {
     /// again once the panic is caught.
     ///
     /// ```
-    /// use lite::{Local, WriteGuard};
+    /// use borrow_lite::{Local, WriteGuard};
     ///
     /// let cell = Local::new((1u32, 2u32));
     /// {

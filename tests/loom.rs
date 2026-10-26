@@ -24,7 +24,7 @@
 //! So a loom run reporting "reader and writer both inside the cell" on this
 //! protocol is a false alarm, not a bug. An earlier version of this file
 //! reported exactly that, and a standalone copy of the same handshake - with no
-//! lite code involved at all - reported it too, which is how the cause was
+//! borrow_lite code involved at all - reported it too, which is how the cause was
 //! pinned down.
 //!
 //! What is therefore checked here:
@@ -45,7 +45,7 @@ use loom::sync::Arc;
 use loom::sync::atomic::{AtomicUsize, Ordering};
 use loom::thread;
 
-use lite::Shared;
+use borrow_lite::Shared;
 
 /// Loom does not order `SeqCst` accesses across locations, so this outcome is
 /// reachable and the test is written to record it.
@@ -106,7 +106,7 @@ fn loom_does_not_order_seqcst_across_locations() {
 #[test]
 fn two_writers_never_lose_an_update() {
     loom::model(|| {
-        let cell: Shared<u64> = lite::shared(0);
+        let cell: Shared<u64> = borrow_lite::shared(0);
         let first = cell.clone();
         let second = cell.clone();
 
@@ -143,7 +143,7 @@ fn two_writers_never_lose_an_update() {
 #[test]
 fn readers_never_conflict_with_each_other() {
     loom::model(|| {
-        let cell: Shared<u64> = lite::shared(7);
+        let cell: Shared<u64> = borrow_lite::shared(7);
         let first = cell.clone();
         let second = cell.clone();
 
@@ -180,7 +180,7 @@ fn readers_never_conflict_with_each_other() {
 #[test]
 fn a_released_borrow_becomes_available_to_the_other_thread() {
     loom::model(|| {
-        let cell: Shared<u64> = lite::shared(0);
+        let cell: Shared<u64> = borrow_lite::shared(0);
         let writer = cell.clone();
         let reader = cell.clone();
 
@@ -213,7 +213,7 @@ fn a_released_borrow_becomes_available_to_the_other_thread() {
 #[test]
 fn borrow_bookkeeping_is_balanced() {
     loom::model(|| {
-        let cell: Shared<u64> = lite::shared(0);
+        let cell: Shared<u64> = borrow_lite::shared(0);
         let other = cell.clone();
 
         let a = thread::spawn(move || {
@@ -262,7 +262,7 @@ fn borrow_bookkeeping_is_balanced() {
 #[ignore = "loom false alarm on the two-location SeqCst protocol; passes on a single-word state"]
 fn a_reader_and_a_writer_are_never_inside_together() {
     loom::model(|| {
-        let cell: Shared<u64> = lite::shared(0);
+        let cell: Shared<u64> = borrow_lite::shared(0);
         let reader = cell.clone();
         let writer = cell.clone();
 
@@ -344,7 +344,7 @@ fn a_reader_and_a_writer_are_never_inside_together() {
 #[test]
 fn a_refused_reader_does_not_wrap_the_count() {
     loom::model(|| {
-        let cell: Shared<u64> = lite::shared(0);
+        let cell: Shared<u64> = borrow_lite::shared(0);
         let reader = cell.clone();
         let writer = cell.clone();
 
@@ -377,7 +377,7 @@ fn a_refused_reader_does_not_wrap_the_count() {
 #[test]
 fn a_writer_conflict_always_carries_a_location() {
     loom::model(|| {
-        let cell: Shared<u32> = lite::shared(0);
+        let cell: Shared<u32> = borrow_lite::shared(0);
         let writer = cell.clone();
         let reader = cell.clone();
 
@@ -389,7 +389,7 @@ fn a_writer_conflict_always_carries_a_location() {
 
         let b = thread::spawn(move || {
             if let Err(conflict) = reader.try_borrow() {
-                assert_eq!(conflict.kind(), lite::ConflictKind::Writer);
+                assert_eq!(conflict.kind(), borrow_lite::ConflictKind::Writer);
                 assert!(
                     conflict.holder().is_some(),
                     "a writer conflict lost the writer's location"
@@ -419,7 +419,7 @@ fn a_writer_conflict_always_carries_a_location() {
 #[test]
 fn a_reader_release_never_erases_the_writers_location() {
     loom::model(|| {
-        let cell: Shared<u32> = lite::shared(0);
+        let cell: Shared<u32> = borrow_lite::shared(0);
         let reader = cell.clone();
         let writer = cell.clone();
 
@@ -453,7 +453,7 @@ fn a_reader_release_never_erases_the_writers_location() {
 #[test]
 fn a_cloned_guard_holds_the_borrow_after_the_original_is_dropped() {
     loom::model(|| {
-        let cell: Shared<u64> = lite::shared(1);
+        let cell: Shared<u64> = borrow_lite::shared(1);
         let reader_handle = cell.clone();
         let check_handle = cell.clone();
 

@@ -1,6 +1,6 @@
 //! The part that makes the crate worth using: what the panic actually says.
 
-use lite::{ConflictKind, Local, Shared};
+use borrow_lite::{ConflictKind, Local, Shared};
 
 /// The panicking comparison operators must blame *this* file, not a line inside
 /// the crate.
@@ -23,8 +23,8 @@ fn comparison_panics_name_the_caller() {
         );
     }
 
-    let a = lite::inline(1u8);
-    let b = lite::inline(2u8);
+    let a = borrow_lite::inline(1u8);
+    let b = borrow_lite::inline(2u8);
     let held = a.borrow_mut();
     assert_names_caller(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -284,7 +284,7 @@ fn a_clone_keeps_the_borrow_and_clears_the_holder() {
 /// test that fails if `map` forgets the flag.
 #[test]
 fn a_mapped_recorder_clears_the_holder_it_recorded() {
-    use lite::ReadGuard;
+    use borrow_lite::ReadGuard;
 
     let cell = Local::new((1u32, 2u32));
 

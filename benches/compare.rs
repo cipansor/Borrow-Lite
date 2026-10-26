@@ -1,7 +1,7 @@
 //! Cost of the two cells, next to the `std` types they stand in for.
 //!
 //! The point is not to win a microbenchmark. It is to price the diagnostics:
-//! `lite` records a source location and a borrow count on every borrow,
+//! `borrow_lite` records a source location and a borrow count on every borrow,
 //! and the numbers here say what that costs.
 //!
 //! Run with `cargo bench`. `cargo test --all-targets` runs the same code in
@@ -14,13 +14,13 @@ use std::hint::black_box;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
+use borrow_lite::{Conflict, Inline, Local, ReadGuard, Shared, cell, inline, local, shared};
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use lite::{Conflict, Inline, Local, ReadGuard, Shared, cell, inline, local, shared};
 
 /// Shared read borrow, then read the value through the guard.
 fn read_local(c: &mut Criterion) {
     let std_cell = Rc::new(RefCell::new(0u64));
-    let lite_cell: Local<u64> = local(0);
+    let borrow_cell: Local<u64> = local(0);
 
     let mut group = c.benchmark_group("read/local");
     group.bench_function("std/Rc<RefCell>", |b| {
@@ -29,9 +29,9 @@ fn read_local(c: &mut Criterion) {
             black_box(*guard)
         });
     });
-    group.bench_function("lite/Local", |b| {
+    group.bench_function("borrow_lite/Local", |b| {
         b.iter(|| {
-            let guard = lite_cell.borrow();
+            let guard = borrow_cell.borrow();
             black_box(*guard)
         });
     });
@@ -41,7 +41,7 @@ fn read_local(c: &mut Criterion) {
 /// Exclusive borrow, then mutate.
 fn write_local(c: &mut Criterion) {
     let std_cell = Rc::new(RefCell::new(0u64));
-    let lite_cell: Local<u64> = local(0);
+    let borrow_cell: Local<u64> = local(0);
 
     let mut group = c.benchmark_group("write/local");
     group.bench_function("std/Rc<RefCell>", |b| {
@@ -51,9 +51,9 @@ fn write_local(c: &mut Criterion) {
             black_box(*guard)
         });
     });
-    group.bench_function("lite/Local", |b| {
+    group.bench_function("borrow_lite/Local", |b| {
         b.iter(|| {
-            let mut guard = lite_cell.borrow_mut();
+            let mut guard = borrow_cell.borrow_mut();
             *guard = guard.wrapping_add(1);
             black_box(*guard)
         });
@@ -64,7 +64,7 @@ fn write_local(c: &mut Criterion) {
 /// The closure form, which is what the crate recommends.
 fn closure_form(c: &mut Criterion) {
     let std_cell = Rc::new(RefCell::new(0u64));
-    let lite_cell: Local<u64> = local(0);
+    let borrow_cell: Local<u64> = local(0);
 
     let mut group = c.benchmark_group("with/local");
     group.bench_function("std/Rc<RefCell>", |b| {
@@ -74,8 +74,8 @@ fn closure_form(c: &mut Criterion) {
             black_box(*value)
         });
     });
-    group.bench_function("lite/with_mut", |b| {
-        b.iter(|| lite_cell.with_mut(|value| black_box(*value)));
+    group.bench_function("borrow_lite/with_mut", |b| {
+        b.iter(|| borrow_cell.with_mut(|value| black_box(*value)));
     });
     group.finish();
 }
@@ -84,7 +84,7 @@ fn closure_form(c: &mut Criterion) {
 /// code has. Each iteration does one read-modify-write through the cell.
 fn churn_local(c: &mut Criterion) {
     let std_cell = Rc::new(RefCell::new(0u64));
-    let lite_cell: Local<u64> = local(0);
+    let borrow_cell: Local<u64> = local(0);
 
     let mut group = c.benchmark_group("churn/local");
     group.bench_function("std/Rc<RefCell>", |b| {
@@ -95,12 +95,12 @@ fn churn_local(c: &mut Criterion) {
             black_box(*std_cell.borrow())
         });
     });
-    group.bench_function("lite/Local", |b| {
+    group.bench_function("borrow_lite/Local", |b| {
         b.iter(|| {
             for _ in 0..16 {
-                lite_cell.with_mut(|value| *value += 1);
+                borrow_cell.with_mut(|value| *value += 1);
             }
-            black_box(lite_cell.with(|value| *value))
+            black_box(borrow_cell.with(|value| *value))
         });
     });
     group.finish();
@@ -109,7 +109,7 @@ fn churn_local(c: &mut Criterion) {
 /// Cross-thread read borrow, next to `RwLock::read`.
 fn read_shared(c: &mut Criterion) {
     let std_cell = Arc::new(RwLock::new(0u64));
-    let lite_cell: Shared<u64> = shared(0);
+    let borrow_cell: Shared<u64> = shared(0);
 
     let mut group = c.benchmark_group("read/shared");
     group.bench_function("std/Arc<RwLock>", |b| {
@@ -118,9 +118,9 @@ fn read_shared(c: &mut Criterion) {
             black_box(*guard)
         });
     });
-    group.bench_function("lite/Shared", |b| {
+    group.bench_function("borrow_lite/Shared", |b| {
         b.iter(|| {
-            let guard = lite_cell.borrow();
+            let guard = borrow_cell.borrow();
             black_box(*guard)
         });
     });
@@ -130,7 +130,7 @@ fn read_shared(c: &mut Criterion) {
 /// Cross-thread exclusive borrow, next to `RwLock::write`.
 fn write_shared(c: &mut Criterion) {
     let std_cell = Arc::new(RwLock::new(0u64));
-    let lite_cell: Shared<u64> = shared(0);
+    let borrow_cell: Shared<u64> = shared(0);
 
     let mut group = c.benchmark_group("write/shared");
     group.bench_function("std/Arc<RwLock>", |b| {
@@ -140,9 +140,9 @@ fn write_shared(c: &mut Criterion) {
             black_box(*guard)
         });
     });
-    group.bench_function("lite/Shared", |b| {
+    group.bench_function("borrow_lite/Shared", |b| {
         b.iter(|| {
-            let mut guard = lite_cell.borrow_mut();
+            let mut guard = borrow_cell.borrow_mut();
             *guard = guard.wrapping_add(1);
             black_box(*guard)
         });
@@ -153,23 +153,23 @@ fn write_shared(c: &mut Criterion) {
 /// The cost of a refused borrow: the success path, then the `Err` path.
 fn conflict_path(c: &mut Criterion) {
     let std_cell = Rc::new(RefCell::new(0u64));
-    let lite_cell: Local<u64> = local(0);
+    let borrow_cell: Local<u64> = local(0);
 
     let mut group = c.benchmark_group("try/local");
     group.bench_function("std/Rc<RefCell> success", |b| {
         b.iter(|| black_box(std_cell.try_borrow_mut().is_ok()));
     });
-    group.bench_function("lite/Local success", |b| {
-        b.iter(|| black_box(lite_cell.try_borrow_mut().is_ok()));
+    group.bench_function("borrow_lite/Local success", |b| {
+        b.iter(|| black_box(borrow_cell.try_borrow_mut().is_ok()));
     });
     group.bench_function("std/Rc<RefCell> conflict", |b| {
         let held = std_cell.borrow_mut();
         b.iter(|| black_box(std_cell.try_borrow_mut().is_err()));
         drop(held);
     });
-    group.bench_function("lite/Local conflict", |b| {
-        let held = lite_cell.borrow_mut();
-        b.iter(|| black_box(lite_cell.try_borrow_mut().is_err()));
+    group.bench_function("borrow_lite/Local conflict", |b| {
+        let held = borrow_cell.borrow_mut();
+        b.iter(|| black_box(borrow_cell.try_borrow_mut().is_err()));
         drop(held);
     });
     group.finish();
@@ -178,22 +178,22 @@ fn conflict_path(c: &mut Criterion) {
 /// Cloning a handle: `Rc::clone`/`Arc::clone` against the newtype wrapper.
 fn clone_handle(c: &mut Criterion) {
     let std_rc = Rc::new(RefCell::new(0u64));
-    let lite_local: Local<u64> = local(0);
+    let borrow_local: Local<u64> = local(0);
     let std_arc = Arc::new(RwLock::new(0u64));
-    let lite_shared: Shared<u64> = shared(0);
+    let borrow_shared: Shared<u64> = shared(0);
 
     let mut group = c.benchmark_group("clone");
     group.bench_function("std/Rc::clone", |b| {
         b.iter(|| black_box(Rc::clone(&std_rc)));
     });
-    group.bench_function("lite/Local::clone", |b| {
-        b.iter(|| black_box(lite_local.clone()));
+    group.bench_function("borrow_lite/Local::clone", |b| {
+        b.iter(|| black_box(borrow_local.clone()));
     });
     group.bench_function("std/Arc::clone", |b| {
         b.iter(|| black_box(Arc::clone(&std_arc)));
     });
-    group.bench_function("lite/Shared::clone", |b| {
-        b.iter(|| black_box(lite_shared.clone()));
+    group.bench_function("borrow_lite/Shared::clone", |b| {
+        b.iter(|| black_box(borrow_shared.clone()));
     });
     group.finish();
 }
@@ -205,13 +205,13 @@ fn allocation(c: &mut Criterion) {
     group.bench_function("std/Rc<RefCell<u64>>", |b| {
         b.iter(|| black_box(Rc::new(RefCell::new(black_box(0u64)))));
     });
-    group.bench_function("lite/Local<u64>", |b| {
+    group.bench_function("borrow_lite/Local<u64>", |b| {
         b.iter(|| black_box(local(black_box(0u64))));
     });
     group.bench_function("std/Arc<RwLock<u64>>", |b| {
         b.iter(|| black_box(Arc::new(RwLock::new(black_box(0u64)))));
     });
-    group.bench_function("lite/Shared<u64>", |b| {
+    group.bench_function("borrow_lite/Shared<u64>", |b| {
         b.iter(|| black_box(shared(black_box(0u64))));
     });
     group.finish();
@@ -219,12 +219,12 @@ fn allocation(c: &mut Criterion) {
 
 /// Narrowing an existing guard, which is the cheap alternative to re-borrowing.
 fn guard_map(c: &mut Criterion) {
-    let lite_cell: Local<Vec<u8>> = local(vec![0; 64]);
+    let borrow_cell: Local<Vec<u8>> = local(vec![0; 64]);
 
     let mut group = c.benchmark_group("guard");
-    group.bench_function("lite/map", |b| {
+    group.bench_function("borrow_lite/map", |b| {
         b.iter(|| {
-            let guard = lite_cell.borrow();
+            let guard = borrow_cell.borrow();
             let narrowed: ReadGuard<'_, [u8], _> = ReadGuard::map(guard, |values| &values[..8]);
             black_box(narrowed.len())
         });
@@ -236,7 +236,7 @@ fn guard_map(c: &mut Criterion) {
 /// does no checking at all.
 fn cell_baseline(c: &mut Criterion) {
     let plain = black_box(Cell::new(0u64));
-    let lite_cell: Local<u64> = local(0);
+    let borrow_cell: Local<u64> = local(0);
 
     let mut group = c.benchmark_group("baseline");
     group.bench_function("std/Cell", |b| {
@@ -245,8 +245,8 @@ fn cell_baseline(c: &mut Criterion) {
             black_box(plain.get())
         });
     });
-    group.bench_function("lite/with_mut", |b| {
-        b.iter(|| lite_cell.with_mut(|value| black_box(*value)));
+    group.bench_function("borrow_lite/with_mut", |b| {
+        b.iter(|| borrow_cell.with_mut(|value| black_box(*value)));
     });
     group.finish();
 }
@@ -259,24 +259,24 @@ fn cell_baseline(c: &mut Criterion) {
 /// show the one thing that does cost: the `Rc` pointer hop.
 fn inline_cell(c: &mut Criterion) {
     let std_cell = RefCell::new(0u64);
-    let lite_cell: Inline<u64> = inline(0);
+    let borrow_cell: Inline<u64> = inline(0);
     let shared_cell: Local<u64> = local(0);
 
     let mut group = c.benchmark_group("inline");
     group.bench_function("std/RefCell read", |b| {
         b.iter(|| black_box(*black_box(&std_cell).borrow()));
     });
-    group.bench_function("lite/Inline read", |b| {
-        b.iter(|| black_box(*black_box(&lite_cell).borrow()));
+    group.bench_function("borrow_lite/Inline read", |b| {
+        b.iter(|| black_box(*black_box(&borrow_cell).borrow()));
     });
-    group.bench_function("lite/Local read", |b| {
+    group.bench_function("borrow_lite/Local read", |b| {
         b.iter(|| black_box(*black_box(&shared_cell).borrow()));
     });
     group.bench_function("std/RefCell write", |b| {
         b.iter(|| *black_box(&std_cell).borrow_mut() += 1);
     });
-    group.bench_function("lite/Inline write", |b| {
-        b.iter(|| *black_box(&lite_cell).borrow_mut() += 1);
+    group.bench_function("borrow_lite/Inline write", |b| {
+        b.iter(|| *black_box(&borrow_cell).borrow_mut() += 1);
     });
     group.finish();
 }
@@ -334,7 +334,7 @@ fn create_and_drop(c: &mut Criterion) {
             BatchSize::SmallInput,
         );
     });
-    group.bench_function("lite/Local", |b| {
+    group.bench_function("borrow_lite/Local", |b| {
         b.iter_batched(
             || (0..32).map(|_| local(0u64)).collect::<Vec<_>>(),
             |cells| drop(black_box(cells)),
@@ -357,7 +357,7 @@ fn unique_handle_paths(c: &mut Criterion) {
         let mut cell = RefCell::new(0u64);
         b.iter(|| *black_box(cell.get_mut()) += 1);
     });
-    group.bench_function("lite/Local::get_mut", |b| {
+    group.bench_function("borrow_lite/Local::get_mut", |b| {
         let mut cell: Local<u64> = local(0);
         b.iter(|| *black_box(cell.get_mut().unwrap()) += 1);
     });
@@ -365,7 +365,7 @@ fn unique_handle_paths(c: &mut Criterion) {
         let cell = RefCell::new(0u64);
         b.iter(|| black_box(cell.take()));
     });
-    group.bench_function("lite/Local::take", |b| {
+    group.bench_function("borrow_lite/Local::take", |b| {
         let cell: Local<u64> = local(0);
         b.iter(|| black_box(cell.take()));
     });
@@ -376,7 +376,7 @@ fn unique_handle_paths(c: &mut Criterion) {
             BatchSize::SmallInput,
         );
     });
-    group.bench_function("lite/Local::into_inner", |b| {
+    group.bench_function("borrow_lite/Local::into_inner", |b| {
         b.iter_batched(
             || local(0u64),
             |cell| black_box(cell.into_inner().unwrap()),
@@ -410,7 +410,7 @@ fn diagnostics(c: &mut Criterion) {
         let _held = std_cell.borrow_mut();
         b.iter(|| black_box(std_cell.try_borrow_mut().unwrap_err().to_string()));
     });
-    group.bench_function("lite/Conflict::to_string", |b| {
+    group.bench_function("borrow_lite/Conflict::to_string", |b| {
         b.iter(|| black_box(conflict.to_string()));
     });
     // The default panic hook prints every caught panic to stderr. That would
@@ -430,7 +430,7 @@ fn diagnostics(c: &mut Criterion) {
             black_box(caught.is_err())
         });
     });
-    group.bench_function("lite/borrow_mut panic path", |b| {
+    group.bench_function("borrow_lite/borrow_mut panic path", |b| {
         let cell: Local<u64> = local(0);
         let _held = cell.borrow();
         b.iter(|| {
@@ -442,7 +442,7 @@ fn diagnostics(c: &mut Criterion) {
     });
 
     std::panic::set_hook(previous);
-    group.bench_function("lite/kind+holder (no format)", |b| {
+    group.bench_function("borrow_lite/kind+holder (no format)", |b| {
         b.iter(|| black_box((conflict.kind(), conflict.holder(), conflict.count())));
     });
     group.finish();
@@ -453,8 +453,8 @@ fn diagnostics(c: &mut Criterion) {
 /// the handles. The `std` columns are `Rc<RefCell>` and `Arc<RwLock>` doing the
 /// same comparison, so the price of the diagnostics is visible on this path too.
 fn equality(c: &mut Criterion) {
-    let lite_a: Local<u64> = local(7);
-    let lite_b: Local<u64> = local(7);
+    let borrow_a: Local<u64> = local(7);
+    let borrow_b: Local<u64> = local(7);
     let std_a = Rc::new(RefCell::new(7u64));
     let std_b = Rc::new(RefCell::new(7u64));
 
@@ -462,26 +462,26 @@ fn equality(c: &mut Criterion) {
     group.bench_function("std/Rc<RefCell>", |b| {
         b.iter(|| black_box(std_a == std_b));
     });
-    group.bench_function("lite/Local", |b| {
-        b.iter(|| black_box(lite_a == lite_b));
+    group.bench_function("borrow_lite/Local", |b| {
+        b.iter(|| black_box(borrow_a == borrow_b));
     });
-    group.bench_function("lite/Local::ptr_eq", |b| {
-        b.iter(|| black_box(lite_a.ptr_eq(&lite_b)));
+    group.bench_function("borrow_lite/Local::ptr_eq", |b| {
+        b.iter(|| black_box(borrow_a.ptr_eq(&borrow_b)));
     });
-    group.bench_function("lite/Local::try_eq", |b| {
-        b.iter(|| black_box(lite_a.try_eq(&lite_b).unwrap()));
+    group.bench_function("borrow_lite/Local::try_eq", |b| {
+        b.iter(|| black_box(borrow_a.try_eq(&borrow_b).unwrap()));
     });
     group.finish();
 
     // The values agree with the `std` comparison, checked once at setup rather
     // than per iteration.
-    assert_eq!(lite_a == lite_b, std_a == std_b, "Local::eq diverged");
-    assert_eq!(lite_a.try_eq(&lite_b), Ok(true));
+    assert_eq!(borrow_a == borrow_b, std_a == std_b, "Local::eq diverged");
+    assert_eq!(borrow_a.try_eq(&borrow_b), Ok(true));
     assert!(
-        !lite_a.ptr_eq(&lite_b),
+        !borrow_a.ptr_eq(&borrow_b),
         "distinct cells must not be ptr-equal"
     );
-    assert!(lite_a.ptr_eq(&lite_a.clone()));
+    assert!(borrow_a.ptr_eq(&borrow_a.clone()));
 
     let shared_a: Shared<u64> = shared(7);
     let shared_b: Shared<u64> = shared(7);
@@ -491,13 +491,13 @@ fn equality(c: &mut Criterion) {
     group.bench_function("std/Arc<RwLock>", |b| {
         b.iter(|| black_box(*arc_a.read().unwrap() == *arc_b.read().unwrap()));
     });
-    group.bench_function("lite/Shared", |b| {
+    group.bench_function("borrow_lite/Shared", |b| {
         b.iter(|| black_box(shared_a == shared_b));
     });
-    group.bench_function("lite/Shared::ptr_eq", |b| {
+    group.bench_function("borrow_lite/Shared::ptr_eq", |b| {
         b.iter(|| black_box(shared_a.ptr_eq(&shared_b)));
     });
-    group.bench_function("lite/Shared::try_eq", |b| {
+    group.bench_function("borrow_lite/Shared::try_eq", |b| {
         b.iter(|| black_box(shared_a.try_eq(&shared_b).unwrap()));
     });
     group.finish();
@@ -514,15 +514,15 @@ fn equality(c: &mut Criterion) {
     // a borrow, on either handle type. `try_eq` and `==` on the same cell cost
     // the pointer check, not a read borrow.
     let mut self_group = c.benchmark_group("eq/self");
-    self_group.bench_function("lite/Local self ==", |b| {
-        let other = lite_a.clone();
-        b.iter(|| black_box(lite_a == other));
+    self_group.bench_function("borrow_lite/Local self ==", |b| {
+        let other = borrow_a.clone();
+        b.iter(|| black_box(borrow_a == other));
     });
-    self_group.bench_function("lite/Shared self ==", |b| {
+    self_group.bench_function("borrow_lite/Shared self ==", |b| {
         let other = shared_a.clone();
         b.iter(|| black_box(shared_a == other));
     });
-    self_group.bench_function("lite/Shared self try_eq", |b| {
+    self_group.bench_function("borrow_lite/Shared self try_eq", |b| {
         let other = shared_a.clone();
         b.iter(|| black_box(shared_a.try_eq(&other).unwrap()));
     });
@@ -537,17 +537,17 @@ fn equality(c: &mut Criterion) {
 /// after, and the `with` row is the closure form they replace.
 fn closure_free_forms(c: &mut Criterion) {
     let std_cell = Cell::new(0u64);
-    let lite_cell: Local<u64> = local(0);
+    let borrow_cell: Local<u64> = local(0);
 
     let mut read = c.benchmark_group("get/local");
     read.bench_function("std/Cell::get", |b| {
         b.iter(|| black_box(std_cell.get()));
     });
-    read.bench_function("lite/Local::get", |b| {
-        b.iter(|| black_box(lite_cell.get()));
+    read.bench_function("borrow_lite/Local::get", |b| {
+        b.iter(|| black_box(borrow_cell.get()));
     });
-    read.bench_function("lite/Local::with", |b| {
-        b.iter(|| lite_cell.with(|value| black_box(*value)));
+    read.bench_function("borrow_lite/Local::with", |b| {
+        b.iter(|| borrow_cell.with(|value| black_box(*value)));
     });
     read.finish();
 
@@ -555,17 +555,17 @@ fn closure_free_forms(c: &mut Criterion) {
     write.bench_function("std/Cell::set", |b| {
         b.iter(|| std_cell.set(black_box(1)));
     });
-    write.bench_function("lite/Local::set", |b| {
-        b.iter(|| lite_cell.set(black_box(1)));
+    write.bench_function("borrow_lite/Local::set", |b| {
+        b.iter(|| borrow_cell.set(black_box(1)));
     });
     // The value is materialised *before* the closure, so both sides receive it
     // the same way. Black-boxing inside the closure instead - the obvious form
     // - measures the closure-capture of a black box, not the cell, and reports
     // a ~20% penalty that `set` does not actually pay.
-    write.bench_function("lite/Local::with_mut", |b| {
+    write.bench_function("borrow_lite/Local::with_mut", |b| {
         b.iter(|| {
             let value = black_box(1);
-            lite_cell.with_mut(|slot| *slot = value);
+            borrow_cell.with_mut(|slot| *slot = value);
         });
     });
     write.finish();

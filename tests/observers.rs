@@ -1,6 +1,6 @@
 //! The observer pattern, including the two ways it usually breaks.
 
-use lite::{Conflict, Observable};
+use borrow_lite::{Conflict, Observable};
 
 #[test]
 fn observers_are_called_on_update() {
@@ -100,7 +100,10 @@ fn re_entrant_update_is_a_conflict() {
 
     source.try_update(|v| *v += 1).unwrap();
     let reported = outcome.with(|o| *o).expect("observer reported");
-    assert_eq!(reported.unwrap_err().kind(), lite::ConflictKind::Readers);
+    assert_eq!(
+        reported.unwrap_err().kind(),
+        borrow_lite::ConflictKind::Readers
+    );
     // the outer update still applied exactly once
     assert_eq!(source.with(|v| *v), 1);
 
@@ -161,7 +164,7 @@ fn observers_see_a_stable_value() {
 
 #[cfg(test)]
 mod tests {
-    use lite::{MAX_NOTIFICATION_ROUNDS, Observable};
+    use borrow_lite::{MAX_NOTIFICATION_ROUNDS, Observable};
 
     #[test]
     fn notification_handles_a_round_of_new_subscribers() {
@@ -739,7 +742,7 @@ fn replace_returns_the_old_value_and_notifies_like_set() {
     });
     assert_eq!(
         refused.with(|o| o.clone()),
-        Some(Err((lite::ConflictKind::Writer, vec![99]))),
+        Some(Err((borrow_lite::ConflictKind::Writer, vec![99]))),
         "a refused replace must report the conflict and hand the value back"
     );
     assert_eq!(
@@ -916,7 +919,7 @@ fn try_notify_reports_the_conflict_and_keeps_the_observers() {
         outcome_in_update.update(|o| *o = Some(inner.try_notify()));
     });
     let conflict = outcome.with(|o| *o).unwrap().unwrap_err();
-    assert_eq!(conflict.kind(), lite::ConflictKind::Writer);
+    assert_eq!(conflict.kind(), borrow_lite::ConflictKind::Writer);
 
     // The refused inner notification ran nobody; the outer `update` then
     // notified once on its own, so the total is 1 and not 2.
@@ -949,7 +952,7 @@ fn notify_with_no_observers_cannot_panic_inside_an_update() {
 /// process; and the observer count it prints has to be the live count, which
 /// `observer_count()` reports and the raw list length does not.
 mod debug_output {
-    use lite::Observable;
+    use borrow_lite::Observable;
 
     /// Reading `Debug` from inside an observer used to print `0 observer(s)`,
     /// because the round in progress has been moved out of the list. It must
@@ -1036,7 +1039,7 @@ mod debug_output {
 /// `false` for an unknown id" contract at exactly the moment the return value
 /// is hardest to reason about.
 mod unobserve_contract {
-    use lite::Observable;
+    use borrow_lite::Observable;
 
     #[test]
     fn an_unknown_id_is_false_outside_and_inside_a_notification() {

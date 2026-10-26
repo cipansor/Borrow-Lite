@@ -1,8 +1,8 @@
-# lite
+# borrow_lite
 
 Shared, mutable data in Rust without the parts that usually bite you.
 
-`lite` is a small experiment in ergonomics, not a new borrow checker. It gives
+`borrow_lite` is a small experiment in ergonomics, not a new borrow checker. It gives
 three types that cover the three shapes people actually write, and it changes
 what happens when a borrow is refused: instead of a bare
 `already borrowed: BorrowMutError`, you get an error that names the file and
@@ -13,7 +13,7 @@ easy it is to write code that never hits it.
 
 ## The three shapes
 
-| Shape | std | lite |
+| Shape | std | borrow_lite |
 |---|---|---|
 | one owner, value stored inline | `RefCell<T>` | `Inline<T>` |
 | shared + mutable, one thread | `Rc<RefCell<T>>` | `Local<T>` |
@@ -25,7 +25,7 @@ sharing on top, at the cost of one allocation each. All three expose the same
 method set, so moving a value between shapes is a type change, not a rewrite.
 
 ```rust
-use lite::{Local, Shared, local, shared};
+use borrow_lite::{Local, Shared, local, shared};
 
 let a: Local<i32> = local(5);
 let b: Local<i32> = local(5);
@@ -40,10 +40,10 @@ let c: Shared<i32> = shared(1);
 assert!(c == c.clone());
 ```
 
-## Old way vs `lite`
+## Old way vs `borrow_lite`
 
 The honest way to judge ergonomics is to put the code people already write next
-to the code `lite` asks for, on the same task.
+to the code `borrow_lite` asks for, on the same task.
 
 ### Side by side: one owner
 
@@ -56,7 +56,7 @@ assert_eq!(stats.borrow().len(), 4);
 ```
 
 ```rust
-use lite::inline;
+use borrow_lite::inline;
 
 let stats = inline(vec![1, 2, 3]);
 stats.with_mut(|v| v.push(4));
@@ -79,7 +79,7 @@ assert_eq!(total, 6);
 ```
 
 ```rust
-use lite::local;
+use borrow_lite::local;
 
 let stats = local(vec![1, 2, 3]);
 let total: i32 = stats.with(|v| v.iter().sum());
@@ -95,7 +95,7 @@ compounds in a struct full of fields, where the old way is
 
 ### Side by side: when it goes wrong
 
-This is where the two diverge. `std` tells you a borrow exists; `lite` tells you
+This is where the two diverge. `std` tells you a borrow exists; `borrow_lite` tells you
 which one.
 
 ```rust
@@ -110,14 +110,14 @@ let _: std::cell::BorrowMutError = err;
 ```
 
 ```rust
-use lite::inline;
+use borrow_lite::inline;
 
 let cell = inline(0);
 let held = cell.borrow();
 let err = cell.try_borrow_mut().unwrap_err();
 // `Conflict` carries the location of the borrow in the way, its kind and count.
 assert!(err.to_string().contains("held at"));
-assert_eq!(err.kind(), lite::ConflictKind::Readers);
+assert_eq!(err.kind(), borrow_lite::ConflictKind::Readers);
 assert_eq!(err.count(), Some(1));
 # drop(held);
 ```
@@ -136,7 +136,7 @@ idiomatic form of each side; `tests/ergonomics.rs` computes them and fails if a
 claim stops holding. Character count is a proxy for what you type, not for
 readability.
 
-| Task | `std` | `lite` | shorter by |
+| Task | `std` | `borrow_lite` | shorter by |
 |---|---|---|---|
 | swap two cells | `std::mem::swap(&mut *a.borrow_mut(), &mut *b.borrow_mut())` | `a.swap(&b)` | **81%** |
 | wire an observer (re-entrancy safe) | build both `Rc<RefCell<..>>`, drain before notifying | `Observable::new`, `observe`, `update` | **75%** |
@@ -176,9 +176,9 @@ where `Rc<RefCell<T>>` and `Arc<RwLock<T>>` stop being fun.
 
 The measured table above covers the *repetitive* lines (reads, writes, field
 access). This one is the mapping for the rest - which `std` construct becomes
-which `lite` one:
+which `borrow_lite` one:
 
-| Task | old (`std`) | `lite` |
+| Task | old (`std`) | `borrow_lite` |
 |---|---|---|
 | one-owner cell | `RefCell<T>` | `Inline<T>` |
 | shared cell, one thread | `Rc<RefCell<T>>` | `Local<T>` |
@@ -193,7 +193,7 @@ Two rows are the whole pitch. A conflict becomes a value you can match on
 instead of a panic or a deadlock, and a borrow you cannot forget to release is
 the default rather than a discipline.
 
-### Where `lite` is *longer* (the honest column)
+### Where `borrow_lite` is *longer* (the honest column)
 
 Ergonomics is a trade, not a free win, and a few places cost more keystrokes:
 
@@ -214,7 +214,7 @@ Ergonomics is a trade, not a free win, and a few places cost more keystrokes:
   dependency.
 
 If those costs matter more than the diagnostics, `RefCell` is a fine choice -
-see [When not to use `lite`](#when-not-to-use-lite).
+see [When not to use `borrow_lite`](#when-not-to-use-borrow_lite).
 
 ## What changes, in detail
 
@@ -234,16 +234,16 @@ stats.borrow_mut().push(4); // panicked at 'already borrowed: BorrowMutError'
 # let _ = reader;
 ```
 
-`lite` tracks the source location of every borrow that is holding the
+`borrow_lite` tracks the source location of every borrow that is holding the
 cell, so the panic reads like a stack trace you can act on:
 
 ```rust,should_panic
-use lite::Local;
+use borrow_lite::Local;
 
 let stats = Local::new(vec![1, 2, 3]);
 let guard = stats.borrow();
 stats.borrow_mut().push(4);
-// panicked at lite: cell is already immutably borrowed
+// panicked at borrow_lite: cell is already immutably borrowed
 //   (borrow attempted at src/main.rs:5:7)
 //   ; held at src/main.rs:4:15 (1 active borrow)
 //   - a borrow is still alive. Drop the guard, or use `with`/`with_mut`
@@ -257,12 +257,12 @@ because the reader count is necessarily zero at that moment and printing it
 would claim `0 active borrows` about a cell that is very much borrowed:
 
 ```rust,should_panic
-use lite::Local;
+use borrow_lite::Local;
 
 let stats = Local::new(vec![1, 2, 3]);
 let guard = stats.borrow_mut();
 stats.borrow_mut().push(4);
-// panicked at lite: cell is already mutably borrowed
+// panicked at borrow_lite: cell is already mutably borrowed
 //   (borrow attempted at src/main.rs:5:7)
 //   ; held at src/main.rs:4:15 - a borrow is still alive...
 # let _ = guard;
@@ -278,7 +278,7 @@ twin is `try_eq`, `<` and friends, whose twin is `try_cmp`, and `with`, whose
 twin is `try_with` - and a conflict is a normal `std::error::Error`:
 
 ```rust
-use lite::{Conflict, Local};
+use borrow_lite::{Conflict, Local};
 
 fn bump(counter: &Local<i32>) -> Result<(), Conflict> {
     *counter.try_borrow_mut()? += 1;
@@ -301,7 +301,7 @@ The most common cause of a "borrow conflict" panic is a guard that outlived the
 statement you needed it for:
 
 ```rust
-use lite::Local;
+use borrow_lite::Local;
 
 let stats = Local::new(vec![1, 2, 3]);
 let total: i32 = stats.with(|values| values.iter().sum());
@@ -317,7 +317,7 @@ When the operation is a plain read or a plain store, the closure is noise, so
 `get` and `set` are the closure-free spelling of the same borrow:
 
 ```rust
-use lite::shared;
+use borrow_lite::shared;
 
 let counter = shared(0i32);
 counter.set(5);       // == counter.with_mut(|v| *v = 5)
@@ -338,7 +338,7 @@ a reference into the cell.** The guard is gone by the time it returns, so the
 borrow checker refuses:
 
 ```compile_fail
-use lite::Local;
+use borrow_lite::Local;
 
 let cell = Local::new(vec![1, 2, 3]);
 let item: &i32 = cell.with(|v| &v[0]); // error: borrowed value does not live long enough
@@ -355,7 +355,7 @@ the flags are pure overhead. `get_mut` skips them, the same way `RefCell::get_mu
 and `Rc::get_mut` do:
 
 ```rust
-use lite::local;
+use borrow_lite::local;
 
 let mut stats = local(Vec::new());
 stats.get_mut().unwrap().push(1); // no flag, no guard, no location
@@ -372,7 +372,7 @@ the cell and hands the value back, and `take` empties it in place - the pair to
 `get_mut`, and the same pair `RefCell`/`Rc`/`Arc` offer. `cargo bench --bench
 compare -- unique` prices them against the `std` calls they mirror:
 
-| Path | `std` | `lite` |
+| Path | `std` | `borrow_lite` |
 |---|---|---|
 | borrow the value out of a unique handle | `RefCell::get_mut` 0.59 ns | `get_mut` 0.63 ns |
 | consume the cell | `Rc::try_unwrap` 16.9 ns | `into_inner` 16.9 ns |
@@ -387,7 +387,7 @@ is honest about it.
 Two more value-moving calls round out the surface, both mirroring `RefCell`:
 
 ```rust
-use lite::local;
+use borrow_lite::local;
 
 // `replace_with` computes the new value from the old, so a replacement that
 // must consume the old one needs no clone.
@@ -397,13 +397,13 @@ assert!(old.is_empty()); // `f` ran first and took the vector
 assert_eq!(cell.with(Vec::clone), vec![1, 2, 3]);
 
 // `swap` exchanges two cells. `RefCell::swap` on the same cell double-borrows
-// and reports a generic second-borrow; `lite` detects it and points at you.
+// and reports a generic second-borrow; `borrow_lite` detects it and points at you.
 let a = local(1u8);
 let b = local(2u8);
 a.swap(&b);
 assert_eq!(a.with(|v| *v), 2);
 let self_swap = a.try_swap(&a).unwrap_err();
-assert_eq!(self_swap.kind(), lite::ConflictKind::Writer); // named, not generic
+assert_eq!(self_swap.kind(), borrow_lite::ConflictKind::Writer); // named, not generic
 ```
 
 ### 5. The trait surface you already reach for
@@ -419,13 +419,13 @@ short-circuits on the pointer and never borrows, so `cell == cell` never panics.
 One difference from `Rc`/`Arc` is worth naming: they run that short-circuit only
 when `T: Eq` (they specialise on `Eq`, because "a `PartialEq` might be
 deliberately irreflexive"), so `Rc<RefCell<f64>>` compared with itself still
-borrows. lite short-circuits for every `T: PartialEq`, so a `Local<f64>`
+borrows. borrow_lite short-circuits for every `T: PartialEq`, so a `Local<f64>`
 holding `NaN` is equal to itself where the `Rc` would not be. That is the only
 observable divergence, and a test pins it.
 When you cannot afford the panic, `try_eq` is the twin that returns the conflict:
 
 ```rust
-use lite::local;
+use borrow_lite::local;
 
 let a = local(1);
 let b = local(1);
@@ -442,7 +442,7 @@ short-circuits to `Equal`; distinct cells compare by value under a shared borrow
 and panic if one is borrowed. `try_cmp` is the twin:
 
 ```rust
-use lite::local;
+use borrow_lite::local;
 use core::cmp::Ordering;
 
 let a = local(1);
@@ -463,7 +463,7 @@ costs you an allocation per cell. `Inline<T>` is the `RefCell<T>` shape: the
 flags and the value sit in the same struct.
 
 ```rust
-use lite::{inline, Inline};
+use borrow_lite::{inline, Inline};
 
 let cell: Inline<Vec<i32>> = inline(vec![1, 2, 3]);
 cell.with_mut(|v| v.push(4));
@@ -474,7 +474,7 @@ It has the same auto traits as `RefCell<T>`: `Send` when `T: Send`, and `!Sync`.
 That `Send` is the part `Local<T>` cannot do, because `Local` is built on an `Rc`:
 
 ```rust
-use lite::Inline;
+use borrow_lite::Inline;
 
 let cell = Inline::new(String::from("hi"));
 let seen = std::thread::spawn(move || cell.with(String::clone)).join().unwrap();
@@ -496,7 +496,7 @@ rather than a single flag. Fine for a struct; for a million-element array, use
 ## Threads
 
 ```rust
-use lite::shared;
+use borrow_lite::shared;
 
 let counter = shared(0usize);
 std::thread::scope(|scope| {
@@ -532,7 +532,7 @@ included as a worked example. `Observable<T>` keeps its observers in a
 running it:
 
 ```rust
-use lite::Observable;
+use borrow_lite::Observable;
 
 let source = Observable::new(1u8);
 let log = Observable::new(Vec::new());
@@ -570,7 +570,7 @@ the current value" rule intact.
 ## Macros
 
 ```rust
-use lite::{borrow, borrow_mut, try_borrow_mut, with, with_mut, Local};
+use borrow_lite::{borrow, borrow_mut, try_borrow_mut, with, with_mut, Local};
 
 let cell = Local::new(vec![1, 2, 3]);
 
@@ -587,7 +587,7 @@ borrow_mut!(cell, values);
 values.push(5);
 drop(values);
 
-fn push(cell: &Local<Vec<i32>>, value: i32) -> Result<(), lite::Conflict> {
+fn push(cell: &Local<Vec<i32>>, value: i32) -> Result<(), borrow_lite::Conflict> {
     try_borrow_mut!(cell, values);
     values.push(value);
     Ok(())
@@ -603,7 +603,7 @@ struct you read and write field by field, `cell!` generates one accessor pair pe
 field, so the closure goes away:
 
 ```rust
-use lite::cell;
+use borrow_lite::cell;
 
 cell! {
     shared Stats, StatsData {
@@ -656,9 +656,9 @@ cannot overlap, exactly as `RefCell<Struct>` would behave.
 
 ## What it is up against
 
-`lite` is not the only answer to "shared mutable state in Rust", and it is
+`borrow_lite` is not the only answer to "shared mutable state in Rust", and it is
 not always the right one. This section is the honest placement: which crate
-wins which workload, measured or read from source, and where `lite` should
+wins which workload, measured or read from source, and where `borrow_lite` should
 not be used at all.
 
 ### The alternatives, by what they trade
@@ -672,37 +672,37 @@ not be used at all.
 | `AtomicU64` and friends | none | one atomic op | counters and flags |
 | `tokio::sync::Mutex` | runtime, async, blocks | async state machine | state held across `.await` |
 | `ghost-cell`, `qcell` | **compile time** | brand/token plumbing | when you can afford lifetimes everywhere to get zero runtime checks |
-| `lite` | runtime, reports, never blocks | ~0.3 ns per borrow | low contention, short borrows, re-entrancy, and diagnostics you can act on |
+| `borrow_lite` | runtime, reports, never blocks | ~0.3 ns per borrow | low contention, short borrows, re-entrancy, and diagnostics you can act on |
 
-### Where `lite` wins, and by how much
+### Where `borrow_lite` wins, and by how much
 
 - **Against `RefCell`**: the borrow path costs about +0.3 ns (1.51 vs 1.19 ns
   for a read). In exchange, a refused borrow names the location of both the
   attempt and the holder instead of saying `already borrowed`. It also adds
   `try_*`, so a conflict can be a value instead of a panic. `RefCell` has one
-  thing `lite` lacked - `get_mut` - and that gap is now closed.
+  thing `borrow_lite` lacked - `get_mut` - and that gap is now closed.
 - **`Inline` as a drop-in for `RefCell`**: swapping
-  `use std::cell::{Cell, RefCell}` for `use lite::Inline as RefCell` in
+  `use std::cell::{Cell, RefCell}` for `use borrow_lite::Inline as RefCell` in
   `markup5ever_rcdom` - a real HTML parser, not a benchmark harness - compiles
   with no changes and passes that crate's tests. On its parse-and-walk workload
   the cost is about +4% (709-722 µs against 684-689 µs). `Local` costs +30% on
   the same workload, because every cell is a separate allocation.
 - **Against `std::sync::RwLock`**: the borrow itself is *faster* (4.20 vs
   5.15 ns read), because `RwLock` must be able to park a waiter and so does more
-  work on its fast path. `lite` never parks, so it also never poisons and
+  work on its fast path. `borrow_lite` never parks, so it also never poisons and
   never deadlocks on re-entrancy.
 - **Against `parking_lot::RwLock`**: this is the real competition, and the
   verdict depends on the retry loop. With `spin_loop` - the loop most people
-  write - `lite` loses badly (14.4 ms vs 1.17 ms at eight threads). With
+  write - `borrow_lite` loses badly (14.4 ms vs 1.17 ms at eight threads). With
   `thread::yield_now`, it wins at 4 and 8 threads (523 µs vs 729 µs, 932 µs vs
   1.17 ms) and is level at 2. The cell is not the variable; the waiting is.
   `parking_lot` also keeps its entire state in one `AtomicUsize` (a bitfield of
   `PARKED_BIT`, `WRITER_BIT` and a reader count) and decides read-versus-write
-  with a single `compare_exchange`, whereas `lite` runs a two-flag
+  with a single `compare_exchange`, whereas `borrow_lite` runs a two-flag
   `SeqCst` handshake. That is the one place `parking_lot` is structurally ahead,
   and it is a real implementation difference, not a measurement artefact - but
   copying it does not pay, for the measured reason given below.
-- **Against `arc_swap` / `Arc<T>`**: `lite` loses outright on read-mostly
+- **Against `arc_swap` / `Arc<T>`**: `borrow_lite` loses outright on read-mostly
   work - 152 ms against 250 µs at eight threads, 600x - because every reader
   writes a shared cache line to record its borrow, and `arc_swap` readers do
   not. There is no version of a borrow-counting cell that closes this; the
@@ -714,7 +714,7 @@ not be used at all.
 The read-mostly 600x is structural: any cell that counts borrows must mutate
 shared state per borrow. Two things follow.
 
-First, `lite` should say so, which it now does, rather than pretending to
+First, `borrow_lite` should say so, which it now does, rather than pretending to
 be a general `RwLock` replacement.
 
 Second, the one gap that looked closable was the `parking_lot` fast path: pack
@@ -727,7 +727,7 @@ at every thread count, on the same cell with the same retry.
 
 The reason is that `parking_lot`'s design is not transplantable, because it does
 not carry the thing this crate exists to carry. `parking_lot` has no per-borrow
-location, so its fast path is one CAS and nothing else. `lite` records a
+location, so its fast path is one CAS and nothing else. `borrow_lite` records a
 holder `Location` to name the culprit, and a holder pointer is a second location
 - so packing the *reader count* in too buys nothing while forcing a `cmpxchg`
 where the shipped version's `fetch_add`/`fetch_sub` compile to a cheaper
@@ -777,22 +777,22 @@ A later review of the same area found two more holes, both now closed:
   release path had the mirror gap). Folding presence and location into the one
   `AtomicPtr` compare-exchange removes the window; `tests/loom.rs` now models it.
 
-### When not to use `lite`
+### When not to use `borrow_lite`
 
 Say it plainly, because a crate that hides its own limits is not trustworthy:
 
 - **Many readers, no writer** -> `Arc<T>`, `arc_swap`, or a plain copy.
-  `lite` costs 600x here for a guarantee nobody needs.
+  `borrow_lite` costs 600x here for a guarantee nobody needs.
 - **High contention with long critical sections** -> `parking_lot::RwLock`.
   Parking a thread is the right shape when the wait is long; retrying is not.
-- **State held across `.await`** -> `tokio::sync::Mutex`. `lite`'s guards
+- **State held across `.await`** -> `tokio::sync::Mutex`. `borrow_lite`'s guards
   are `!Send` on purpose, so a borrow cannot outlive an await point, but that
-  makes `lite` the wrong tool for async shared state, not a safe one.
+  makes `borrow_lite` the wrong tool for async shared state, not a safe one.
 - **Compile-time proof that no conflict exists** -> `ghost-cell` or `qcell`.
-  `lite` checks at runtime; those check at compile time, at the cost of
+  `borrow_lite` checks at runtime; those check at compile time, at the cost of
   what you can express.
 
-If your case is not one of those four, `lite` is likely a strict
+If your case is not one of those four, `borrow_lite` is likely a strict
 improvement over the `RefCell`/`RwLock` you would have written.
 
 ## Waiting for a busy cell
@@ -805,7 +805,7 @@ So the `std` feature ships the loop that measured fastest rather than leaving
 each caller to discover it:
 
 ```rust
-use lite::shared;
+use borrow_lite::shared;
 
 let counter = shared(0usize);
 std::thread::scope(|scope| {
@@ -838,7 +838,7 @@ The diagnostics are not free, so here is what they cost. Numbers are criterion
 medians from `cargo bench` on one 4-core AMD EPYC 9B14 container, rustc 1.99.1.
 Treat them as orders of magnitude, not as absolutes.
 
-| Operation | `std` | `lite` | Difference |
+| Operation | `std` | `borrow_lite` | Difference |
 |---|---|---|---|
 | read borrow, one thread | 1.19 ns | 1.51 ns | +0.32 ns |
 | write borrow, one thread | 1.49 ns | 2.09 ns | +0.60 ns |
@@ -859,7 +859,7 @@ Four things are worth reading out of that table.
 
 **The threaded cell is faster than `RwLock`, not slower.** That is not a
 trick: `RwLock` has to be able to park a waiting thread, so its fast path still
-does more work than two `SeqCst` atomics. `lite` never parks, so its
+does more work than two `SeqCst` atomics. `borrow_lite` never parks, so its
 borrow is cheaper - and that is exactly why it reports a conflict instead of
 waiting. You get the latency and you pay with the retry.
 
@@ -935,7 +935,7 @@ matters more than the nanoseconds - more than the choice of cell, as it turns
 out. Same machine, `cargo bench --bench contention`, medians, four cores. Every
 thread increments one counter.
 
-| Threads | `AtomicU64` | `Arc<RwLock>` | `parking_lot` | `lite` `yield` | `lite` `spin` |
+| Threads | `AtomicU64` | `Arc<RwLock>` | `parking_lot` | `borrow_lite` `yield` | `borrow_lite` `spin` |
 |---|---|---|---|---|---|
 | 1 | 91 µs | 153 µs | 153 µs | 114 µs | 111 µs |
 | 2 | 216 µs | 1.14 ms | 311 µs | 218 µs | 622 µs |
@@ -946,15 +946,15 @@ The `yield` and `parking_lot` columns were added after this section was first
 written, and they change the conclusion. `parking_lot::RwLock` is the real
 competitor - it packs its whole state into one word and takes a single CAS on
 the fast path, so it beats `std::sync::RwLock` everywhere here (311 µs vs
-1.14 ms at two threads). Comparing only against `std` flattered `lite`;
-comparing against `parking_lot` is the honest test, and `lite` with a
+1.14 ms at two threads). Comparing only against `std` flattered `borrow_lite`;
+comparing against `parking_lot` is the honest test, and `borrow_lite` with a
 yielding retry still wins at 4 and 8 threads (1.4x and 1.26x). At two threads it
 is level (218 µs vs 311 µs), and at one thread `parking_lot` ties `std`.
 
 Thread creation is 44-223 µs of each number, so subtract roughly that to read
 the contended part.
 
-That table made an earlier version of this README say `lite` loses under
+That table made an earlier version of this README say `borrow_lite` loses under
 contention. That was wrong, and the reason is worth reading: the loss is the
 waiting loop, not the cell. The benchmark above waits with `spin_loop()`, which
 burns the core it is standing on. `cargo bench --bench retry` compares four ways
@@ -966,7 +966,7 @@ of waiting for the same cell, at 2, 4 and 8 threads:
 | 4 | 4.85 ms | **574 µs** | 688 µs | 1.57 ms |
 | 8 | 14.2 ms | **1.01 ms** | 1.78 ms | 2.97 ms |
 
-With `thread::yield_now()` in the retry loop, `lite` beats `RwLock` at
+With `thread::yield_now()` in the retry loop, `borrow_lite` beats `RwLock` at
 every thread count - 2.5x at four threads, 2.9x at eight - and the numbers are
 stable across runs. It wins for the reason it wins the single-borrow case:
 `RwLock` has to park and unpark a thread to wait, which costs microseconds, and
@@ -1010,7 +1010,7 @@ worst - as the finding, since that held in every run.
 | 1024 | 1.44 ms / 1.41 ms | 259 µs / 258 µs | 477 µs |
 
 `yield` is flat - 223 to 284 µs regardless of how long the borrow is held, and
-roughly half of `RwLock` at every level. The earlier claim that `lite`
+roughly half of `RwLock` at every level. The earlier claim that `borrow_lite`
 degrades with section length was an artefact of spinning, and does not survive
 the yielding loop. `spin` is both slower and erratic here, swinging 2.76 ms to
 1.38 ms at the same work level in different runs; its numbers are not worth
@@ -1029,7 +1029,7 @@ Every other contended benchmark here involves a writer. The pure-read case is
 the one a read-write lock is meant to excel at, so it is worth measuring on its
 own. `cargo bench --bench readonly`, 500,000 reads per thread:
 
-| Threads | `Arc` (no checking) | `lite` | `Arc<RwLock>` |
+| Threads | `Arc` (no checking) | `borrow_lite` | `Arc<RwLock>` |
 |---|---|---|---|
 | 1 | 47 µs | 2.00 ms | 2.68 ms |
 | 2 | 79 µs | 20.6 ms | 26.2 ms |
@@ -1038,17 +1038,17 @@ own. `cargo bench --bench readonly`, 500,000 reads per thread:
 
 The first column is the surprise. With no borrow bookkeeping at all, 2.5 million
 reads across eight threads take 250 µs. Add bookkeeping and the same work takes
-152 ms - **600x slower**, and `lite` is the faster of the two cells. The
+152 ms - **600x slower**, and `borrow_lite` is the faster of the two cells. The
 cost is not the cell; it is that every reader writes to a shared cache line.
 
-`lite` still wins on this workload, but the margin is thinner than it
+`borrow_lite` still wins on this workload, but the margin is thinner than it
 looks: 1.2x at four threads and 1.06x at eight, not the 1.3x to 1.8x an earlier
 version of this table claimed. The eight-thread row is the worst in the file for
-reproducibility - lite measured 152 ms, 159 ms and 152 ms on three runs,
+reproducibility - borrow_lite measured 152 ms, 159 ms and 152 ms on three runs,
 and `RwLock` 162 ms, 157 ms and 184 ms - because eight threads on four cores are
 oversubscribed and the median depends on how the scheduler happened to interleave
 them. Trust the shape (both cells are hundreds of times slower than no checking,
-and lite is not the loser), not the last digit. It wins because
+and borrow_lite is not the loser), not the last digit. It wins because
 `AtomicState::try_shared` is one `fetch_add` and one load, while `RwLock` has to
 do its own atomic work and touch its futex state. Both are paying the same
 price for the same reason: the counter that records "someone is reading" is
@@ -1276,7 +1276,7 @@ over all locations. Loom does not model that - its README says `SeqCst` accesses
 "are regarded as `AcqRel` ... causing Loom to generate false alarms". A loom test
 that asserts "a reader and a writer are never both inside the cell" therefore
 fails on this protocol, and it fails for a standalone copy of the same handshake
-with no lite code in it at all, which is how the cause was pinned down.
+with no borrow_lite code in it at all, which is how the cause was pinned down.
 
 So `tests/loom.rs` checks the parts that do not need a global order - release
 frees the cell, readers do not conflict, two writers never lose an update,

@@ -11,7 +11,7 @@
 /// end of the enclosing block.
 ///
 /// ```
-/// use lite::{borrow, Local};
+/// use borrow_lite::{borrow, Local};
 ///
 /// let cell = Local::new(vec![1, 2, 3]);
 /// borrow!(cell, values);
@@ -27,7 +27,7 @@ macro_rules! borrow {
 /// Take an exclusive borrow into a named binding.
 ///
 /// ```
-/// use lite::{borrow_mut, Local};
+/// use borrow_lite::{borrow_mut, Local};
 ///
 /// let cell = Local::new(vec![1, 2, 3]);
 /// borrow_mut!(cell, values);
@@ -48,7 +48,7 @@ macro_rules! borrow_mut {
 /// from [`Conflict`](crate::Conflict).
 ///
 /// ```
-/// use lite::{try_borrow, Conflict, Local};
+/// use borrow_lite::{try_borrow, Conflict, Local};
 ///
 /// fn first(cell: &Local<Vec<u8>>) -> Result<u8, Conflict> {
 ///     try_borrow!(cell, values);
@@ -67,7 +67,7 @@ macro_rules! try_borrow {
 /// Take an exclusive borrow, propagating a [`Conflict`](crate::Conflict) with `?`.
 ///
 /// ```
-/// use lite::{try_borrow_mut, Conflict, Local};
+/// use borrow_lite::{try_borrow_mut, Conflict, Local};
 ///
 /// fn push(cell: &Local<Vec<u8>>, value: u8) -> Result<(), Conflict> {
 ///     try_borrow_mut!(cell, values);
@@ -92,7 +92,7 @@ macro_rules! try_borrow_mut {
 /// it cannot be the cause of a later conflict.
 ///
 /// ```
-/// use lite::{with, Local};
+/// use borrow_lite::{with, Local};
 ///
 /// let cell = Local::new(vec![1, 2, 3]);
 /// let len = with!(cell, values, { values.len() });
@@ -108,7 +108,7 @@ macro_rules! with {
 /// Run a block with an exclusive borrow in scope, releasing it afterwards.
 ///
 /// ```
-/// use lite::{with_mut, Local};
+/// use borrow_lite::{with_mut, Local};
 ///
 /// let cell = Local::new(vec![1, 2, 3]);
 /// with_mut!(cell, values, { values.push(4) });
@@ -129,7 +129,7 @@ macro_rules! with_mut {
 /// `cell!` generates one accessor pair per field instead:
 ///
 /// ```
-/// use lite::cell;
+/// use borrow_lite::cell;
 ///
 /// cell! {
 ///     shared Stats, StatsData {
@@ -152,7 +152,7 @@ macro_rules! with_mut {
 /// (thread-safe, shared by `Arc`).
 ///
 /// ```
-/// use lite::cell;
+/// use borrow_lite::cell;
 ///
 /// cell! {
 ///     inline Point, PointData {
@@ -192,7 +192,7 @@ macro_rules! with_mut {
 /// read and a write held at once is a conflict:
 ///
 /// ```should_panic
-/// use lite::cell;
+/// use borrow_lite::cell;
 ///
 /// cell! { local Pair, PairData { a: u8 => a_mut, b: u8 => b_mut } }
 ///

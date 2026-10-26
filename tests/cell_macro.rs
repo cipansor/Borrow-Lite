@@ -5,7 +5,7 @@
 //! pass-through, `Clone` sharing one cell, and the two limits worth stating -
 //! one cell guards the whole struct, and a conflict is still a runtime event.
 
-use lite::{Conflict, ConflictKind, cell};
+use borrow_lite::{Conflict, ConflictKind, cell};
 
 cell! {
     shared Stats, StatsData {

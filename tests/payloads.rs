@@ -17,7 +17,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use lite::{Local, Observable, Shared, local, shared};
+use borrow_lite::{Local, Observable, Shared, local, shared};
 
 /// Counts its own drops, so a test can assert *how many times* the payload was
 /// destroyed rather than only that it was.

@@ -45,7 +45,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use lite::{Observable, ObserverId};
+use borrow_lite::{Observable, ObserverId};
 use libfuzzer_sys::fuzz_target;
 
 struct Live {

@@ -1,4 +1,4 @@
-//! # lite
+//! # `borrow_lite`
 //!
 //! Three everyday shapes of Rust ownership, made hard to get wrong:
 //!
@@ -22,7 +22,7 @@
 //! disappear. What it does is remove the three failure modes that make those
 //! shapes annoying in practice:
 //!
-//! | Problem | lite |
+//! | Problem | `borrow_lite` |
 //! |---|---|
 //! | `RefCell::borrow_mut()` panics with `already borrowed: BorrowMutError`, which names neither the culprit nor the victim | the panic message carries the *source location* of both the borrow that is in the way and the borrow that was refused, plus how many borrows are active when readers are what is in the way |
 //! | `RwLock` blocks forever, or poisons, when the same thread re-enters | every borrow has a `try_` twin, and [`Conflict`] is a plain `Error` you can `?` on, so a conflict is a recoverable error instead of a deadlock |
@@ -45,12 +45,12 @@
 //! The same code with [`Local`], where the panic tells you what to do:
 //!
 //! ```should_panic
-//! use lite::Local;
+//! use borrow_lite::Local;
 //!
 //! let stats = Local::new(vec![1, 2, 3]);
 //! let guard = stats.borrow();
 //! stats.borrow_mut().push(4);
-//! // panicked at lite: cell is already immutably borrowed
+//! // panicked at borrow_lite: cell is already immutably borrowed
 //! //   (borrow attempted at src/main.rs:5:7); held at src/main.rs:4:15
 //! //   (1 active borrow) - a borrow is still alive. Drop the guard, or use
 //! //   `with`/`with_mut` so it cannot leak.
@@ -59,7 +59,7 @@
 //! And the form that never gets into that state in the first place:
 //!
 //! ```
-//! use lite::Local;
+//! use borrow_lite::Local;
 //!
 //! let stats = Local::new(vec![1, 2, 3]);
 //! let total: i32 = stats.with(|values| values.iter().sum());
@@ -70,7 +70,7 @@
 //! ## Conflicts as errors
 //!
 //! ```no_run
-//! use lite::{Conflict, Local};
+//! use borrow_lite::{Conflict, Local};
 //!
 //! fn bump(counter: &Local<i32>) -> Result<(), Conflict> {
 //!     *counter.try_borrow_mut()? += 1;
@@ -90,7 +90,7 @@
 //! deadlock:
 //!
 //! ```
-//! use lite::{Shared, shared};
+//! use borrow_lite::{Shared, shared};
 //!
 //! let counter = shared(0usize);
 //! std::thread::scope(|scope| {
@@ -114,7 +114,7 @@
 //! is what makes the plain-`Cell` bookkeeping sound.
 //!
 //! ```compile_fail
-//! use lite::Local;
+//! use borrow_lite::Local;
 //!
 //! let cell = Local::new(0u8);
 //! std::thread::spawn(move || {
@@ -127,7 +127,7 @@
 //! another thread either - even a `Shared` one, whose handle is `Send`.
 //!
 //! ```compile_fail
-//! use lite::{shared, Shared};
+//! use borrow_lite::{shared, Shared};
 //!
 //! let cell: Shared<u8> = shared(0);
 //! let guard = cell.borrow();
@@ -203,7 +203,7 @@ pub mod __macro_support {
 /// value, and every clone sees the same data:
 ///
 /// ```
-/// use lite::Local;
+/// use borrow_lite::Local;
 ///
 /// let a = Local::new(String::from("hi"));
 /// let b = a.clone();
@@ -218,12 +218,12 @@ pub mod __macro_support {
 ///
 /// ```compile_fail
 /// fn is_send<T: Send>() {}
-/// is_send::<lite::Local<u8>>();
+/// is_send::<borrow_lite::Local<u8>>();
 /// ```
 ///
 /// ```compile_fail
 /// fn is_sync<T: Sync>() {}
-/// is_sync::<lite::Local<u8>>();
+/// is_sync::<borrow_lite::Local<u8>>();
 /// ```
 ///
 /// Borrowing methods ([`borrow`](Inner::borrow), [`with`](Inner::with),
@@ -237,7 +237,7 @@ pub struct Local<T: ?Sized>(Rc<Inner<T, state::LocalState>>);
 /// contents can be borrowed mutably. Cloning clones the handle:
 ///
 /// ```
-/// use lite::{shared, Shared};
+/// use borrow_lite::{shared, Shared};
 ///
 /// let a: Shared<u8> = shared(0);
 /// let b = a.clone();
@@ -254,13 +254,13 @@ pub struct Local<T: ?Sized>(Rc<Inner<T, state::LocalState>>);
 /// ```compile_fail
 /// // `Cell<u8>` is `Send` but not `Sync`, so the handle must not be `Sync`.
 /// fn is_sync<T: Sync>() {}
-/// is_sync::<lite::Shared<std::cell::Cell<u8>>>();
+/// is_sync::<borrow_lite::Shared<std::cell::Cell<u8>>>();
 /// ```
 ///
 /// ```compile_fail
 /// // Nor may a `!Send` payload travel: `Rc<u8>` is not `Send`.
 /// fn is_send<T: Send>() {}
-/// is_send::<lite::Shared<std::rc::Rc<u8>>>();
+/// is_send::<borrow_lite::Shared<std::rc::Rc<u8>>>();
 /// ```
 ///
 /// ```compile_fail
@@ -270,14 +270,14 @@ pub struct Local<T: ?Sized>(Rc<Inner<T, state::LocalState>>);
 /// // exactly what `!Send` forbids. So `Shared` needs `T: Send + Sync`, not just
 /// // `T: Sync`.
 /// fn is_sync<T: Sync>() {}
-/// is_sync::<lite::Shared<std::sync::MutexGuard<'static, u8>>>();
+/// is_sync::<borrow_lite::Shared<std::sync::MutexGuard<'static, u8>>>();
 /// ```
 ///
 /// The same hole through the [`Deref`] target rather than the handle: reaching
 /// `&Inner` directly and sending *that* to a scoped thread is refused too.
 ///
 /// ```compile_fail
-/// use lite::{shared, Inner, state::AtomicState};
+/// use borrow_lite::{shared, Inner, state::AtomicState};
 /// use std::sync::{Mutex, MutexGuard};
 ///
 /// let m: &'static Mutex<u8> = Box::leak(Box::new(Mutex::new(1)));
@@ -300,7 +300,7 @@ pub struct Shared<T: ?Sized>(Arc<Inner<T, state::AtomicState>>);
 /// for when a single owner holds the value and nothing is shared:
 ///
 /// ```
-/// use lite::Inline;
+/// use borrow_lite::Inline;
 ///
 /// let cell = Inline::new(vec![1, 2, 3]);
 /// cell.with_mut(|v| v.push(4));
@@ -328,7 +328,7 @@ pub struct Shared<T: ?Sized>(Arc<Inner<T, state::AtomicState>>);
 /// to use [`Cell`](core::cell::Cell) or `RefCell` instead.
 ///
 /// ```
-/// use lite::Inline;
+/// use borrow_lite::Inline;
 ///
 /// let cell = Inline::new(1u8);
 /// let borrowed_at = line!() + 1; // the `borrow()` below
@@ -346,7 +346,7 @@ pub struct Shared<T: ?Sized>(Arc<Inner<T, state::AtomicState>>);
 /// owns its value can move to another thread:
 ///
 /// ```
-/// use lite::Inline;
+/// use borrow_lite::Inline;
 ///
 /// let cell = Inline::new(String::from("hi"));
 /// let seen = std::thread::spawn(move || cell.with(String::clone)).join().unwrap();
@@ -359,7 +359,7 @@ pub struct Shared<T: ?Sized>(Arc<Inner<T, state::AtomicState>>);
 ///
 /// ```compile_fail
 /// fn is_sync<T: Sync>() {}
-/// is_sync::<lite::Inline<u8>>();
+/// is_sync::<borrow_lite::Inline<u8>>();
 /// ```
 ///
 /// Borrowing methods ([`borrow`](Inner::borrow), [`with`](Inner::with),
@@ -457,7 +457,7 @@ impl<T: Clone> Clone for Inline<T> {
     /// message if the cell is exclusively borrowed at the time.
     ///
     /// ```
-    /// use lite::inline;
+    /// use borrow_lite::inline;
     ///
     /// let cell = inline(vec![1, 2, 3]);
     /// let copy = cell.clone();
@@ -498,7 +498,7 @@ impl<T: ?Sized> Local<T> {
     /// therefore always `true`, and never borrows the value.
     ///
     /// ```
-    /// use lite::local;
+    /// use borrow_lite::local;
     ///
     /// let a = local(1u8);
     /// let b = a.clone();
@@ -520,7 +520,7 @@ impl<T: ?Sized> Local<T> {
     /// for tearing one down after the handles are gone.
     ///
     /// ```
-    /// use lite::local;
+    /// use borrow_lite::local;
     ///
     /// let mut cell = local(vec![1, 2, 3]);
     /// cell.get_mut().unwrap().push(4);
@@ -543,7 +543,7 @@ impl<T: ?Sized> Local<T> {
     /// handle, this takes it.
     ///
     /// ```
-    /// use lite::local;
+    /// use borrow_lite::local;
     ///
     /// let cell = local(String::from("bye"));
     /// let other = cell.clone();
@@ -578,7 +578,7 @@ impl<T: ?Sized> Shared<T> {
     /// `true`, and never borrows the value.
     ///
     /// ```
-    /// use lite::shared;
+    /// use borrow_lite::shared;
     ///
     /// let a = shared(1u8);
     /// let b = a.clone();
@@ -597,7 +597,7 @@ impl<T: ?Sized> Shared<T> {
     /// last handle, which is what rules out a borrow held by another thread.
     ///
     /// ```
-    /// use lite::shared;
+    /// use borrow_lite::shared;
     ///
     /// let mut cell = shared(String::from("hi"));
     /// cell.get_mut().unwrap().push('!');
@@ -614,7 +614,7 @@ impl<T: ?Sized> Shared<T> {
     /// handle exists, which is what rules out a borrow held by another thread.
     ///
     /// ```
-    /// use lite::shared;
+    /// use borrow_lite::shared;
     ///
     /// let cell = shared(7u8);
     /// let other = cell.clone();

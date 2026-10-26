@@ -3,13 +3,13 @@
 //! A walk through the API, side by side with the `std` it replaces: the three
 //! shapes (`Local`, `Shared`, `Inline`), the closure-free and closure forms,
 //! conflicts as values, the `cell!` macro, and the threaded case. Each section
-//! shows the same small operation the `std` type would need and what `lite`
+//! shows the same small operation the `std` type would need and what `borrow_lite`
 //! prints when it goes wrong.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use lite::{Conflict, Inline, Local, Observable, Shared, cell, inline, local, shared};
+use borrow_lite::{Conflict, Inline, Local, Observable, Shared, cell, inline, local, shared};
 
 cell! {
     shared Stats, StatsData {
@@ -20,7 +20,7 @@ cell! {
 
 fn main() {
     refcell_style();
-    lite_style();
+    borrow_style();
     closure_free();
     conflicts_as_values();
     named_fields();
@@ -49,8 +49,8 @@ fn refcell_style() {
     println!();
 }
 
-fn lite_style() {
-    println!("== lite::Local ==");
+fn borrow_style() {
+    println!("== borrow_lite::Local ==");
     let total = local(0i32);
     let other = total.clone();
 

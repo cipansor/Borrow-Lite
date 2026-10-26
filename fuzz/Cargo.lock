@@ -18,17 +18,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
 
 [[package]]
-name = "lite"
+name = "borrow_lite"
 version = "0.1.0"
 dependencies = [
  "loom",
 ]
 
 [[package]]
-name = "lite-fuzz"
+name = "borrow_lite-fuzz"
 version = "0.0.0"
 dependencies = [
- "lite",
+ "borrow_lite",
  "libfuzzer-sys",
 ]
 

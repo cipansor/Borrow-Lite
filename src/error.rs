@@ -31,13 +31,13 @@ impl ConflictKind {
 /// actionable message.
 ///
 /// ```
-/// use lite::Local;
+/// use borrow_lite::Local;
 ///
 /// let cell = Local::new(vec![1, 2, 3]);
 /// let _read = cell.borrow();
 /// let err = cell.try_borrow_mut().unwrap_err();
 ///
-/// assert_eq!(err.kind(), lite::ConflictKind::Readers);
+/// assert_eq!(err.kind(), borrow_lite::ConflictKind::Readers);
 /// assert!(err.holder().is_some()); // the `borrow()` call site
 /// assert!(err.to_string().contains("already immutably borrowed"));
 /// ```
@@ -135,7 +135,7 @@ impl Conflict {
     /// The panic payload used by [`borrow`](crate::Inner::borrow) and
     /// [`borrow_mut`](crate::Inner::borrow_mut).
     pub(crate) fn into_panic_message(self) -> String {
-        let mut out = String::from("lite: cell is already ");
+        let mut out = String::from("borrow_lite: cell is already ");
         out.push_str(self.kind.as_str());
         if let Some(wanted) = self.wanted {
             // Writing into the `String` cannot fail.

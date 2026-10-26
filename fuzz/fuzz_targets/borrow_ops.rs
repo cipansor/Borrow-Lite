@@ -32,7 +32,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use lite::{ConflictKind, ReadGuard, WriteGuard, local, shared};
+use borrow_lite::{ConflictKind, ReadGuard, WriteGuard, local, shared};
 
 /// One scripted operation, decoded from a byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

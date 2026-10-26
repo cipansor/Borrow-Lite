@@ -28,8 +28,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, RwLock};
 use std::time::Duration;
 
+use borrow_lite::{Shared, shared};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use lite::{Shared, shared};
 
 const READS_PER_THREAD: u64 = 500_000;
 const THREAD_COUNTS: [u64; 4] = [1, 2, 4, 8];
@@ -50,9 +50,9 @@ fn read_saturation(c: &mut Criterion) {
     for &threads in &THREAD_COUNTS {
         group.throughput(Throughput::Elements(threads * READS_PER_THREAD));
 
-        let lite: Shared<u64> = shared(7);
+        let borrow_lite: Shared<u64> = shared(7);
         group.bench_with_input(
-            BenchmarkId::new("lite/Shared", threads),
+            BenchmarkId::new("borrow_lite/Shared", threads),
             &threads,
             |b, &threads| {
                 b.iter(|| {
@@ -64,11 +64,11 @@ fn read_saturation(c: &mut Criterion) {
                     let sum = std::thread::scope(|scope| {
                         let handles: Vec<_> = (0..threads)
                             .map(|_| {
-                                let lite = lite.clone();
+                                let borrow_lite = borrow_lite.clone();
                                 scope.spawn(move || {
                                     let mut total = 0u64;
                                     for _ in 0..READS_PER_THREAD {
-                                        match lite.try_with(|v| *v) {
+                                        match borrow_lite.try_with(|v| *v) {
                                             Ok(value) => total += value,
                                             Err(_) => {
                                                 refused.fetch_add(1, Ordering::Relaxed);
@@ -163,9 +163,9 @@ fn held_readers(c: &mut Criterion) {
     for &threads in &THREAD_COUNTS {
         group.throughput(Throughput::Elements(threads));
 
-        let lite: Shared<u64> = shared(7);
+        let borrow_lite: Shared<u64> = shared(7);
         group.bench_with_input(
-            BenchmarkId::new("lite/Shared", threads),
+            BenchmarkId::new("borrow_lite/Shared", threads),
             &threads,
             |b, &threads| {
                 b.iter(|| {
@@ -173,11 +173,11 @@ fn held_readers(c: &mut Criterion) {
                     let observed = AtomicU64::new(0);
                     std::thread::scope(|scope| {
                         for _ in 0..threads {
-                            let lite = lite.clone();
+                            let borrow_lite = borrow_lite.clone();
                             let barrier = Arc::clone(&barrier);
                             let observed = &observed;
                             scope.spawn(move || {
-                                let guard = lite.try_borrow().expect("no writer present");
+                                let guard = borrow_lite.try_borrow().expect("no writer present");
                                 // Every reader is inside the borrow here.
                                 observed.fetch_add(*guard, Ordering::SeqCst);
                                 barrier.wait();

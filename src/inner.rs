@@ -124,13 +124,13 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// is nothing to type but the value.
     ///
     /// ```
-    /// use lite::{local, shared};
+    /// use borrow_lite::{local, shared};
     ///
     /// let counter = local(0i32);
     /// counter.set(5);
     /// assert_eq!(counter.get(), 5);
     ///
-    /// let flag: lite::Shared<bool> = shared(false);
+    /// let flag: borrow_lite::Shared<bool> = shared(false);
     /// flag.set(true);
     /// assert!(flag.get());
     /// ```
@@ -163,13 +163,13 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// already borrowed.
     ///
     /// ```
-    /// use lite::local;
+    /// use borrow_lite::local;
     ///
     /// let cell = local(1i32);
     /// let held = cell.borrow();
     /// let (conflict, value) = cell.try_set(2).unwrap_err();
     /// assert_eq!(value, 2); // handed back, not lost
-    /// assert_eq!(conflict.kind(), lite::ConflictKind::Readers);
+    /// assert_eq!(conflict.kind(), borrow_lite::ConflictKind::Readers);
     /// drop(held);
     /// cell.try_set(2).unwrap();
     /// assert_eq!(cell.get(), 2);
@@ -222,13 +222,13 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// already borrowed.
     ///
     /// ```
-    /// use lite::local;
+    /// use borrow_lite::local;
     ///
     /// let cell = local(1u8);
     /// let held = cell.borrow();
     /// let (conflict, value) = cell.try_replace(2).unwrap_err();
     /// assert_eq!(value, 2); // handed back, not lost
-    /// assert_eq!(conflict.kind(), lite::ConflictKind::Readers);
+    /// assert_eq!(conflict.kind(), borrow_lite::ConflictKind::Readers);
     /// drop(held);
     /// assert_eq!(cell.try_replace(3).unwrap(), 1);
     /// ```
@@ -256,7 +256,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// read-only `f` that is the original value.
     ///
     /// ```
-    /// use lite::local;
+    /// use borrow_lite::local;
     ///
     /// let cell = local(5u32);
     /// let old = cell.replace_with(|v| *v + 1);
@@ -268,7 +268,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// first:
     ///
     /// ```
-    /// use lite::local;
+    /// use borrow_lite::local;
     ///
     /// let cell = local(vec![1, 2, 3]);
     /// let old = cell.replace_with(|v| core::mem::take(v));
@@ -308,7 +308,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// already borrowed.
     ///
     /// ```
-    /// use lite::local;
+    /// use borrow_lite::local;
     ///
     /// let cell = local(1u8);
     /// let held = cell.borrow();
@@ -316,7 +316,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     ///     Ok(old) => panic!("expected a conflict, got {old}"),
     ///     Err(pair) => pair,
     /// };
-    /// assert_eq!(conflict.kind(), lite::ConflictKind::Readers);
+    /// assert_eq!(conflict.kind(), borrow_lite::ConflictKind::Readers);
     /// drop(held);
     /// let old = match cell.try_replace_with(f) {
     ///     Ok(old) => old,
@@ -347,7 +347,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// lost to a conflict.
     ///
     /// ```
-    /// use lite::local;
+    /// use borrow_lite::local;
     ///
     /// let cell = local(vec![1, 2, 3]);
     /// assert_eq!(cell.take(), vec![1, 2, 3]);
@@ -370,7 +370,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// Returns the [`Conflict`] if the cell is already borrowed.
     ///
     /// ```
-    /// use lite::local;
+    /// use borrow_lite::local;
     ///
     /// let cell = local(vec![1, 2, 3]);
     /// let held = cell.borrow();
@@ -394,10 +394,10 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// cells must be unborrowed. Where this differs is the diagnostics - a
     /// refused swap names the cell that was in the way and the call site, and
     /// swapping a cell with *itself* is refused with a message that says so
-    /// rather than a second-borrow report that blames lite's own internals.
+    /// rather than a second-borrow report that blames `borrow_lite`'s own internals.
     ///
     /// ```
-    /// use lite::{local, shared};
+    /// use borrow_lite::{local, shared};
     ///
     /// let a = local(1u8);
     /// let b = local(2u8);
@@ -436,7 +436,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// exclusive, so the second could never be granted. It is detected before
     /// either borrow is attempted, so the reported
     /// [`wanted`](Conflict::wanted) location is this call - not a line inside
-    /// lite - and there is no [`holder`](Conflict::holder), because no borrow
+    /// `borrow_lite` - and there is no [`holder`](Conflict::holder), because no borrow
     /// was actually in the way.
     ///
     /// # Errors
@@ -445,13 +445,13 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// `other` are the same cell.
     ///
     /// ```
-    /// use lite::local;
+    /// use borrow_lite::local;
     ///
     /// let a = local(1u8);
     /// let b = local(2u8);
     /// let held = a.borrow();
     /// let conflict = a.try_swap(&b).unwrap_err();
-    /// assert_eq!(conflict.kind(), lite::ConflictKind::Readers);
+    /// assert_eq!(conflict.kind(), borrow_lite::ConflictKind::Readers);
     /// drop(held);
     /// assert!(a.try_swap(&b).is_ok());
     /// assert_eq!(a.with(|v| *v), 2);
@@ -519,7 +519,7 @@ impl<T: ?Sized> Inner<T, LocalState> {
     /// location instead of being silently ignored.
     ///
     /// ```
-    /// use lite::{inline, local, shared};
+    /// use borrow_lite::{inline, local, shared};
     ///
     /// let counter = local(vec![1, 2, 3]);
     /// assert_eq!(counter.get(), vec![1, 2, 3]);
@@ -527,7 +527,7 @@ impl<T: ?Sized> Inner<T, LocalState> {
     /// let cell = inline(7u8);
     /// assert_eq!(cell.get(), 7);
     ///
-    /// let flag: lite::Shared<bool> = shared(true);
+    /// let flag: borrow_lite::Shared<bool> = shared(true);
     /// assert!(flag.get());
     /// ```
     ///
@@ -552,7 +552,7 @@ impl<T: ?Sized> Inner<T, LocalState> {
     /// Returns the [`Conflict`] if the value cannot be borrowed.
     ///
     /// ```
-    /// use lite::local;
+    /// use borrow_lite::local;
     ///
     /// let cell = local(1i32);
     /// let held = cell.borrow_mut();
@@ -668,7 +668,7 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
     /// location instead of being silently ignored.
     ///
     /// ```
-    /// use lite::{inline, local, shared};
+    /// use borrow_lite::{inline, local, shared};
     ///
     /// let counter = local(vec![1, 2, 3]);
     /// assert_eq!(counter.get(), vec![1, 2, 3]);
@@ -676,7 +676,7 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
     /// let cell = inline(7u8);
     /// assert_eq!(cell.get(), 7);
     ///
-    /// let flag: lite::Shared<bool> = shared(true);
+    /// let flag: borrow_lite::Shared<bool> = shared(true);
     /// assert!(flag.get());
     /// ```
     ///
@@ -701,7 +701,7 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
     /// Returns the [`Conflict`] if the value cannot be borrowed.
     ///
     /// ```
-    /// use lite::local;
+    /// use borrow_lite::local;
     ///
     /// let cell = local(1i32);
     /// let held = cell.borrow_mut();

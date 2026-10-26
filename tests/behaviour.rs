@@ -1,7 +1,7 @@
 //! The behaviour the crate promises: one cell, shared handles, borrows that
 //! are counted and released, and conflicts that carry their source locations.
 
-use lite::{Conflict, ConflictKind, Local, Shared, local, shared};
+use borrow_lite::{Conflict, ConflictKind, Local, Shared, local, shared};
 
 #[test]
 fn local_handles_see_the_same_value() {
@@ -127,7 +127,7 @@ fn replace_returns_the_previous_value() {
 #[test]
 fn read_guard_map_narrows_a_borrow() {
     let cell = Local::new((1u32, String::from("hello")));
-    let guard = lite::ReadGuard::map(cell.borrow(), |t| t.1.as_str());
+    let guard = borrow_lite::ReadGuard::map(cell.borrow(), |t| t.1.as_str());
     assert_eq!(&*guard, "hello");
     // still a borrow of the whole cell
     assert!(cell.try_borrow_mut().is_err());
@@ -137,7 +137,7 @@ fn read_guard_map_narrows_a_borrow() {
 fn write_guard_map_narrows_a_borrow() {
     let cell = Local::new((1u32, 2u32));
     {
-        let mut guard = lite::WriteGuard::map(cell.borrow_mut(), |t| &mut t.0);
+        let mut guard = borrow_lite::WriteGuard::map(cell.borrow_mut(), |t| &mut t.0);
         *guard = 10;
     }
     assert_eq!(cell.with(|t| *t), (10, 2));
@@ -214,7 +214,9 @@ fn a_writer_refused_by_a_writer_does_not_report_a_zero_count() {
 
 /// Run `cell.borrow_mut()` under a live write borrow and return the panic
 /// message. Used to assert on what a user actually sees.
-fn panic_message<S: lite::state::State, T: ?Sized>(cell: &lite::Inner<T, S>) -> String {
+fn panic_message<S: borrow_lite::state::State, T: ?Sized>(
+    cell: &borrow_lite::Inner<T, S>,
+) -> String {
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = cell.borrow_mut();
     }))
@@ -325,8 +327,8 @@ fn inline_is_send_but_not_sync_like_refcell() {
     // The `!Sync` half is a `compile_fail` doctest on `Inline`; the `Send` half
     // is checkable here, and it is the one `Local` cannot satisfy.
     fn is_send<T: Send>() {}
-    is_send::<lite::Inline<u8>>();
-    is_send::<lite::Inline<String>>();
+    is_send::<borrow_lite::Inline<u8>>();
+    is_send::<borrow_lite::Inline<String>>();
 }
 
 #[test]
@@ -358,39 +360,39 @@ mod differential {
     use std::rc::Rc;
     use std::sync::{Arc, RwLock};
 
-    use lite::{Local, Shared, local, shared};
+    use borrow_lite::{Local, Shared, local, shared};
 
     /// Every operation is applied to both cells; the results must match.
     #[test]
     fn local_matches_rc_refcell_for_the_same_script() {
         let std_cell = Rc::new(RefCell::new(vec![1i32, 2, 3]));
-        let lite: Local<Vec<i32>> = local(vec![1, 2, 3]);
+        let borrow_lite: Local<Vec<i32>> = local(vec![1, 2, 3]);
 
         // read
-        assert_eq!(*std_cell.borrow(), lite.with(|v| v.clone()));
+        assert_eq!(*std_cell.borrow(), borrow_lite.with(|v| v.clone()));
 
         // write
         std_cell.borrow_mut().push(4);
-        lite.with_mut(|v| v.push(4));
-        assert_eq!(*std_cell.borrow(), lite.with(|v| v.clone()));
+        borrow_lite.with_mut(|v| v.push(4));
+        assert_eq!(*std_cell.borrow(), borrow_lite.with(|v| v.clone()));
 
         // replace, which returns the previous value on both sides
         let std_old = std_cell.replace(vec![9]);
-        let lite_old = lite.replace(vec![9]);
-        assert_eq!(std_old, lite_old);
-        assert_eq!(*std_cell.borrow(), lite.with(|v| v.clone()));
+        let borrow_old = borrow_lite.replace(vec![9]);
+        assert_eq!(std_old, borrow_old);
+        assert_eq!(*std_cell.borrow(), borrow_lite.with(|v| v.clone()));
 
         // a second handle sees the same data
         let std_alias = Rc::clone(&std_cell);
-        let lite_alias = lite.clone();
+        let borrow_alias = borrow_lite.clone();
         std_alias.borrow_mut().push(10);
-        lite_alias.with_mut(|v| v.push(10));
-        assert_eq!(*std_cell.borrow(), lite.with(|v| v.clone()));
+        borrow_alias.with_mut(|v| v.push(10));
+        assert_eq!(*std_cell.borrow(), borrow_lite.with(|v| v.clone()));
 
         // sum, the shape the doctests use
         assert_eq!(
             std_cell.borrow().iter().sum::<i32>(),
-            lite.with(|v| v.iter().sum())
+            borrow_lite.with(|v| v.iter().sum())
         );
     }
 
@@ -553,24 +555,24 @@ mod differential {
     #[test]
     fn local_and_rc_refcell_refuse_the_same_borrows() {
         let std_cell = Rc::new(RefCell::new(0u8));
-        let lite: Local<u8> = local(0);
+        let borrow_lite: Local<u8> = local(0);
 
         {
             let _std_read = std_cell.borrow();
-            let _lite_read = lite.borrow();
+            let _borrow_read = borrow_lite.borrow();
             assert!(std_cell.try_borrow_mut().is_err());
-            assert!(lite.try_borrow_mut().is_err());
+            assert!(borrow_lite.try_borrow_mut().is_err());
         }
         {
             let _std_write = std_cell.borrow_mut();
-            let _lite_write = lite.borrow_mut();
+            let _borrow_write = borrow_lite.borrow_mut();
             assert!(std_cell.try_borrow().is_err());
-            assert!(lite.try_borrow().is_err());
+            assert!(borrow_lite.try_borrow().is_err());
         }
 
         // And both recover once the guard is gone.
         assert!(std_cell.try_borrow_mut().is_ok());
-        assert!(lite.try_borrow_mut().is_ok());
+        assert!(borrow_lite.try_borrow_mut().is_ok());
     }
 
     /// The threaded pair. `RwLock` *waits* where `Shared` refuses, so the
@@ -579,18 +581,18 @@ mod differential {
     #[test]
     fn shared_matches_arc_rwlock_for_the_same_script() {
         let std_cell = Arc::new(RwLock::new(0u64));
-        let lite: Shared<u64> = shared(0);
+        let borrow_lite: Shared<u64> = shared(0);
 
         std::thread::scope(|scope| {
             for _ in 0..4 {
                 let std_cell = Arc::clone(&std_cell);
-                let lite = lite.clone();
+                let borrow_lite = borrow_lite.clone();
                 scope.spawn(move || {
                     for _ in 0..250 {
                         // `RwLock` blocks, so no retry is needed; `Shared`
                         // refuses, so retry. Both end up applying every write.
                         *std_cell.write().unwrap() += 1;
-                        while lite.try_with_mut(|v| *v += 1).is_err() {
+                        while borrow_lite.try_with_mut(|v| *v += 1).is_err() {
                             std::thread::yield_now();
                         }
                     }
@@ -599,7 +601,7 @@ mod differential {
         });
 
         assert_eq!(*std_cell.read().unwrap(), 1000);
-        assert_eq!(lite.with(|v| *v), 1000);
+        assert_eq!(borrow_lite.with(|v| *v), 1000);
     }
 }
 
@@ -680,23 +682,23 @@ fn into_inner_and_take_agree_with_std() {
 
     // `take` vs `RefCell::take`.
     let std_cell = RefCell::new(vec![1i32, 2, 3]);
-    let lite = local(vec![1i32, 2, 3]);
-    assert_eq!(std_cell.take(), lite.take());
+    let borrow_lite = local(vec![1i32, 2, 3]);
+    assert_eq!(std_cell.take(), borrow_lite.take());
 
     // `into_inner` vs `Arc::try_unwrap` (both fail with a live second handle,
     // both succeed once it is gone).
     let std_cell = Arc::new(RwLock::new(5u8));
-    let lite = shared(5u8);
+    let borrow_lite = shared(5u8);
     let std_clone = Arc::clone(&std_cell);
-    let lite_clone = lite.clone();
+    let borrow_clone = borrow_lite.clone();
     assert!(Arc::try_unwrap(std_cell).is_err());
-    assert!(lite.into_inner().is_err());
+    assert!(borrow_lite.into_inner().is_err());
     drop(std_clone);
-    drop(lite_clone);
+    drop(borrow_clone);
     let std_cell = Arc::new(RwLock::new(5u8));
-    let lite = shared(5u8);
+    let borrow_lite = shared(5u8);
     assert_eq!(Arc::try_unwrap(std_cell).unwrap().into_inner().unwrap(), 5);
-    assert_eq!(lite.into_inner().unwrap(), 5);
+    assert_eq!(borrow_lite.into_inner().unwrap(), 5);
 }
 
 /// Every panicking method has a `try_` twin that reports the same conflict as
@@ -751,7 +753,7 @@ fn the_try_twins_are_available_on_local_and_shared() {
 /// only the `Local` copies were exercised: deleting the guard from either
 /// `Shared` copy left the whole suite green. Each assertion below pins one copy.
 mod shared_short_circuit {
-    use lite::{Shared, shared};
+    use borrow_lite::{Shared, shared};
 
     /// `Shared::eq` short-circuits on the pointer: a cell compared with itself
     /// is equal without borrowing the value, so a live exclusive borrow cannot
@@ -831,22 +833,25 @@ mod shared_short_circuit {
 /// irreflexive" (their own comment). So `Rc<RefCell<f64>>` compared with itself
 /// still borrows the value, and `Rc::new(NAN) == Rc::clone(..)` is `false`.
 ///
-/// `lite` has no `Eq` bound to specialise on at that point, so it always
+/// `borrow_lite` has no `Eq` bound to specialise on at that point, so it always
 /// short-circuits. The divergence is observable, so it is pinned here rather
 /// than left to prose, and it is documented on the impls.
 mod irreflexive_payload {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use lite::{Local, local};
+    use borrow_lite::{Local, local};
 
     #[test]
     fn local_self_comparison_short_circuits_even_for_a_non_eq_payload() {
-        // lite: the pointer short-circuit runs regardless of `T: Eq`, so
+        // borrow_lite: the pointer short-circuit runs regardless of `T: Eq`, so
         // a cell with a live exclusive borrow still compares equal to itself.
         let cell: Local<f64> = local(1.0);
         let held = cell.borrow_mut();
-        assert!(cell == cell.clone(), "lite short-circuits unconditionally");
+        assert!(
+            cell == cell.clone(),
+            "borrow_lite short-circuits unconditionally"
+        );
         assert_eq!(cell.try_eq(&cell.clone()), Ok(true));
         drop(held);
 
@@ -878,7 +883,7 @@ mod irreflexive_payload {
             "std compares the value, so NAN is not equal to itself"
         );
 
-        // With `T: Eq` std *does* short-circuit, matching lite.
+        // With `T: Eq` std *does* short-circuit, matching borrow_lite.
         let rc_i = Rc::new(RefCell::new(1i32));
         let held = rc_i.borrow_mut();
         assert!(
@@ -894,7 +899,7 @@ mod irreflexive_payload {
 /// names its count but no location; the `Local` cell can name the first reader
 /// for free. Both halves are pinned here, because the docs promise them.
 mod holder_locations {
-    use lite::{ConflictKind, Local, Shared, local, shared};
+    use borrow_lite::{ConflictKind, Local, Shared, local, shared};
 
     #[test]
     fn local_readers_conflict_names_the_first_reader() {
@@ -1086,7 +1091,7 @@ mod holder_locations {
     #[test]
     fn swapping_a_cell_with_itself_is_refused() {
         // `Rc<RefCell<T>>::swap` on the same cell double-borrows and reports a
-        // generic second-borrow. lite detects it and points at the caller.
+        // generic second-borrow. borrow_lite detects it and points at the caller.
         let a = local(1u8);
         let conflict = a.try_swap(&a).unwrap_err();
         assert_eq!(conflict.kind(), ConflictKind::Writer);
@@ -1126,12 +1131,12 @@ mod closure_free_access {
     #[test]
     fn get_matches_cell_get_for_a_copy_type() {
         // Differential against `Cell`, the construct `get` is shaped after.
-        let lite = local(7u8);
+        let borrow_lite = local(7u8);
         let std = std::cell::Cell::new(7u8);
-        assert_eq!(lite.get(), std.get());
-        lite.set(9);
+        assert_eq!(borrow_lite.get(), std.get());
+        borrow_lite.set(9);
         std.set(9);
-        assert_eq!(lite.get(), std.get());
+        assert_eq!(borrow_lite.get(), std.get());
     }
 
     #[test]

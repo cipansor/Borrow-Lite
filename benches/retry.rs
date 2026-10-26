@@ -1,6 +1,6 @@
 //! Does a better retry strategy recover the contention loss?
 //!
-//! `contention.rs` shows `lite` losing to `RwLock` at four and eight
+//! `contention.rs` shows `borrow_lite` losing to `RwLock` at four and eight
 //! threads, because the retry loop burns CPU that a parked thread would give
 //! back. That raises an obvious question: how much of the loss is the cell, and
 //! how much is the naive `spin_loop()` loop the earlier benchmarks use?
@@ -29,8 +29,8 @@ use std::hint::spin_loop;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use borrow_lite::{Shared, shared};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use lite::{Shared, shared};
 
 const WRITES_PER_THREAD: u64 = 20_000;
 const THREAD_COUNTS: [u64; 3] = [2, 4, 8];
@@ -63,14 +63,14 @@ fn wait_backoff(spins: &mut u32) {
 
 /// One contended run: `threads` threads each perform `WRITES_PER_THREAD`
 /// increments through the cell, waiting with `wait` on conflict.
-fn contended(lite: &Shared<u64>, threads: u64, wait: Wait) {
-    let before = lite.with(|v| *v);
+fn contended(borrow_lite: &Shared<u64>, threads: u64, wait: Wait) {
+    let before = borrow_lite.with(|v| *v);
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {
                 let mut spins = 1u32;
                 for _ in 0..WRITES_PER_THREAD {
-                    while lite.try_with_mut(|v| *v += 1).is_err() {
+                    while borrow_lite.try_with_mut(|v| *v += 1).is_err() {
                         wait(&mut spins);
                     }
                     spins = 1;
@@ -78,7 +78,7 @@ fn contended(lite: &Shared<u64>, threads: u64, wait: Wait) {
             });
         }
     });
-    let after = lite.with(|v| *v);
+    let after = borrow_lite.with(|v| *v);
     assert_eq!(after - before, threads * WRITES_PER_THREAD, "lost update");
 }
 
@@ -91,30 +91,30 @@ fn retry_strategies(c: &mut Criterion) {
     for &threads in &THREAD_COUNTS {
         group.throughput(Throughput::Elements(threads * WRITES_PER_THREAD));
 
-        let lite: Shared<u64> = shared(0);
+        let borrow_lite: Shared<u64> = shared(0);
         group.bench_with_input(
             BenchmarkId::new("spin", threads),
             &threads,
             |b, &threads| {
-                b.iter(|| contended(&lite, threads, wait_spin));
+                b.iter(|| contended(&borrow_lite, threads, wait_spin));
             },
         );
 
-        let lite: Shared<u64> = shared(0);
+        let borrow_lite: Shared<u64> = shared(0);
         group.bench_with_input(
             BenchmarkId::new("yield", threads),
             &threads,
             |b, &threads| {
-                b.iter(|| contended(&lite, threads, wait_yield));
+                b.iter(|| contended(&borrow_lite, threads, wait_yield));
             },
         );
 
-        let lite: Shared<u64> = shared(0);
+        let borrow_lite: Shared<u64> = shared(0);
         group.bench_with_input(
             BenchmarkId::new("backoff", threads),
             &threads,
             |b, &threads| {
-                b.iter(|| contended(&lite, threads, wait_backoff));
+                b.iter(|| contended(&borrow_lite, threads, wait_backoff));
             },
         );
 
@@ -146,20 +146,20 @@ fn retry_strategies(c: &mut Criterion) {
 /// The exclusive borrow does `work` units of arithmetic, then increments. Same
 /// shape as the `section` group in `contention.rs`, so the two are comparable.
 fn section(
-    lite: &Shared<u64>,
+    borrow_lite: &Shared<u64>,
     threads: u64,
     writes: u64,
     work: u64,
     wait: Wait,
     expected_delta: u64,
 ) {
-    let before = lite.with(|v| *v);
+    let before = borrow_lite.with(|v| *v);
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {
                 let mut spins = 1u32;
                 for _ in 0..writes {
-                    while lite
+                    while borrow_lite
                         .try_with_mut(|v| {
                             for i in 0..work {
                                 *v = v.wrapping_add(i);
@@ -175,7 +175,7 @@ fn section(
             });
         }
     });
-    let after = lite.with(|v| *v);
+    let after = borrow_lite.with(|v| *v);
     assert_eq!(after - before, expected_delta, "lost update");
 }
 
@@ -198,14 +198,32 @@ fn section_length_by_strategy(c: &mut Criterion) {
         let expected_delta = acquisitions * per_acquisition;
         group.throughput(Throughput::Elements(acquisitions));
 
-        let lite: Shared<u64> = shared(0);
+        let borrow_lite: Shared<u64> = shared(0);
         group.bench_with_input(BenchmarkId::new("spin", work), &work, |b, &work| {
-            b.iter(|| section(&lite, THREADS, WRITES, work, wait_spin, expected_delta))
+            b.iter(|| {
+                section(
+                    &borrow_lite,
+                    THREADS,
+                    WRITES,
+                    work,
+                    wait_spin,
+                    expected_delta,
+                )
+            })
         });
 
-        let lite: Shared<u64> = shared(0);
+        let borrow_lite: Shared<u64> = shared(0);
         group.bench_with_input(BenchmarkId::new("yield", work), &work, |b, &work| {
-            b.iter(|| section(&lite, THREADS, WRITES, work, wait_yield, expected_delta))
+            b.iter(|| {
+                section(
+                    &borrow_lite,
+                    THREADS,
+                    WRITES,
+                    work,
+                    wait_yield,
+                    expected_delta,
+                )
+            })
         });
 
         // `backoff` was only ever measured on short sections, where it wins.
@@ -213,9 +231,18 @@ fn section_length_by_strategy(c: &mut Criterion) {
         // spinning wait is the wrong shape when the holder is off-CPU for a
         // while, so if backoff loses badly as `work` grows it is not a
         // candidate for the default.
-        let lite: Shared<u64> = shared(0);
+        let borrow_lite: Shared<u64> = shared(0);
         group.bench_with_input(BenchmarkId::new("backoff", work), &work, |b, &work| {
-            b.iter(|| section(&lite, THREADS, WRITES, work, wait_backoff, expected_delta))
+            b.iter(|| {
+                section(
+                    &borrow_lite,
+                    THREADS,
+                    WRITES,
+                    work,
+                    wait_backoff,
+                    expected_delta,
+                )
+            })
         });
 
         let std_cell = Arc::new(RwLock::new(0u64));

@@ -24,7 +24,7 @@ use crate::error::Conflict;
 /// single-threaded workload, so it is safe to call unconditionally.
 ///
 /// ```
-/// use lite::{Shared, shared, wait};
+/// use borrow_lite::{Shared, shared, wait};
 ///
 /// let counter = shared(0usize);
 /// std::thread::scope(|scope| {
@@ -56,7 +56,7 @@ pub fn wait() {
 /// `attempts` calls to `op` failed.
 ///
 /// ```
-/// use lite::{Conflict, Local, local, retry};
+/// use borrow_lite::{Conflict, Local, local, retry};
 ///
 /// let counter = local(0i32);
 /// let held = counter.borrow(); // something else is borrowing

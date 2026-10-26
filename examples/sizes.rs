@@ -1,6 +1,6 @@
 //! Handle and guard sizes, as a quick sanity check on the "no extra overhead"
 //! claim. Run with `cargo run --release --example sizes`.
-use lite::{Inline, Local, Shared, inline, local, shared};
+use borrow_lite::{Inline, Local, Shared, inline, local, shared};
 use std::rc::Rc;
 use std::sync::Arc;
 

@@ -1,7 +1,7 @@
 //! Throughput when several threads want the same cell at once.
 //!
 //! The single-thread numbers in `compare.rs` price the diagnostics. These
-//! price the *conflict policy*. `lite` never blocks, so a contended cell
+//! price the *conflict policy*. `borrow_lite` never blocks, so a contended cell
 //! burns CPU in a retry loop, while `RwLock` parks the loser. There is a
 //! crossover, and this is how you find it.
 //!
@@ -26,8 +26,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use borrow_lite::{Shared, shared};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use lite::{Shared, shared};
 
 /// Increments each thread performs. Deliberately large: spawning a thread costs
 /// tens of microseconds, so a short run would measure thread creation rather
@@ -56,25 +56,25 @@ fn write_scaling(c: &mut Criterion) {
         let total = threads * WRITES_PER_THREAD;
         group.throughput(Throughput::Elements(total));
 
-        let lite: Shared<u64> = shared(0);
+        let borrow_lite: Shared<u64> = shared(0);
         group.bench_with_input(
-            BenchmarkId::new("lite/Shared retry", threads),
+            BenchmarkId::new("borrow_lite/Shared retry", threads),
             &threads,
             |b, &threads| {
                 b.iter(|| {
-                    let before = lite.with(|v| *v);
+                    let before = borrow_lite.with(|v| *v);
                     std::thread::scope(|scope| {
                         for _ in 0..threads {
                             scope.spawn(|| {
                                 for _ in 0..WRITES_PER_THREAD {
-                                    while lite.try_with_mut(|v| *v += 1).is_err() {
+                                    while borrow_lite.try_with_mut(|v| *v += 1).is_err() {
                                         spin_loop();
                                     }
                                 }
                             });
                         }
                     });
-                    let after = lite.with(|v| *v);
+                    let after = borrow_lite.with(|v| *v);
                     assert_eq!(after - before, total, "lost update");
                     black_box(after)
                 });
@@ -125,30 +125,30 @@ fn write_scaling(c: &mut Criterion) {
             },
         );
 
-        // The same loop as `lite/Shared retry`, but waiting with
+        // The same loop as `borrow_lite/Shared retry`, but waiting with
         // `yield_now` instead of `spin_loop`. `retry.rs` showed spinning is the
         // worst strategy and yielding beats `RwLock` at every thread count, so
         // the spinning row above understates the cell. This row is the fair
         // comparison, and it is the one to read.
-        let lite: Shared<u64> = shared(0);
+        let borrow_lite: Shared<u64> = shared(0);
         group.bench_with_input(
-            BenchmarkId::new("lite/Shared yield", threads),
+            BenchmarkId::new("borrow_lite/Shared yield", threads),
             &threads,
             |b, &threads| {
                 b.iter(|| {
-                    let before = lite.with(|v| *v);
+                    let before = borrow_lite.with(|v| *v);
                     std::thread::scope(|scope| {
                         for _ in 0..threads {
                             scope.spawn(|| {
                                 for _ in 0..WRITES_PER_THREAD {
-                                    while lite.try_with_mut(|v| *v += 1).is_err() {
+                                    while borrow_lite.try_with_mut(|v| *v += 1).is_err() {
                                         std::thread::yield_now();
                                     }
                                 }
                             });
                         }
                     });
-                    let after = lite.with(|v| *v);
+                    let after = borrow_lite.with(|v| *v);
                     assert_eq!(after - before, total, "lost update");
                     black_box(after)
                 });
@@ -159,7 +159,7 @@ fn write_scaling(c: &mut Criterion) {
         // one word and takes a single CAS on the fast path, so it is cheaper
         // than `std::sync::RwLock` - and it is what people reach for when a
         // contended lock is the bottleneck. Comparing only against `std` would
-        // flatter `lite`.
+        // flatter `borrow_lite`.
         let pl_cell = Arc::new(parking_lot::RwLock::new(0u64));
         group.bench_with_input(
             BenchmarkId::new("parking_lot/RwLock", threads),
@@ -221,17 +221,17 @@ fn mixed_read_heavy(c: &mut Criterion) {
         READERS * READS_PER_READER + WRITES_PER_WRITER,
     ));
 
-    let lite: Shared<u64> = shared(0);
-    group.bench_function("lite/Shared retry", |b| {
+    let borrow_lite: Shared<u64> = shared(0);
+    group.bench_function("borrow_lite/Shared retry", |b| {
         b.iter(|| {
-            let before = lite.with(|v| *v);
+            let before = borrow_lite.with(|v| *v);
             std::thread::scope(|scope| {
                 for _ in 0..READERS {
                     scope.spawn(|| {
                         for _ in 0..READS_PER_READER {
                             // Readers conflict only with the writer, but they
                             // still have to cope with being refused.
-                            while lite.try_with(|v| *v).is_err() {
+                            while borrow_lite.try_with(|v| *v).is_err() {
                                 spin_loop();
                             }
                         }
@@ -239,13 +239,13 @@ fn mixed_read_heavy(c: &mut Criterion) {
                 }
                 scope.spawn(|| {
                     for _ in 0..WRITES_PER_WRITER {
-                        while lite.try_with_mut(|v| *v += 1).is_err() {
+                        while borrow_lite.try_with_mut(|v| *v += 1).is_err() {
                             spin_loop();
                         }
                     }
                 });
             });
-            let after = lite.with(|v| *v);
+            let after = borrow_lite.with(|v| *v);
             assert_eq!(after - before, WRITES_PER_WRITER, "lost update");
             black_box(after)
         });
@@ -296,18 +296,18 @@ fn section_length(c: &mut Criterion) {
         let expected_delta = acquisitions * per_acquisition;
         group.throughput(Throughput::Elements(acquisitions));
 
-        let lite: Shared<u64> = shared(0);
+        let borrow_lite: Shared<u64> = shared(0);
         group.bench_with_input(
-            BenchmarkId::new("lite/Shared retry", work),
+            BenchmarkId::new("borrow_lite/Shared retry", work),
             &work,
             |b, &work| {
                 b.iter(|| {
-                    let before = lite.with(|v| *v);
+                    let before = borrow_lite.with(|v| *v);
                     std::thread::scope(|scope| {
                         for _ in 0..THREADS {
                             scope.spawn(|| {
                                 for _ in 0..WRITES {
-                                    while lite
+                                    while borrow_lite
                                         .try_with_mut(|v| {
                                             for i in 0..work {
                                                 *v = v.wrapping_add(i);
@@ -322,7 +322,7 @@ fn section_length(c: &mut Criterion) {
                             });
                         }
                     });
-                    let after = lite.with(|v| *v);
+                    let after = borrow_lite.with(|v| *v);
                     assert_eq!(after - before, expected_delta, "lost update");
                     black_box(after)
                 });

@@ -67,7 +67,7 @@ struct Subs<T> {
 ///   borrow.
 ///
 /// ```
-/// use lite::Observable;
+/// use borrow_lite::Observable;
 ///
 /// let temperature = Observable::new(20i32);
 /// let seen = Observable::new(Vec::new());
@@ -95,7 +95,7 @@ struct Subs<T> {
 /// value that triggered the notification:
 ///
 /// ```
-/// use lite::Observable;
+/// use borrow_lite::Observable;
 ///
 /// let source = Observable::new(1u8);
 /// let log = Observable::new(Vec::new());
@@ -120,7 +120,7 @@ struct Subs<T> {
 /// cannot be shared between threads:
 ///
 /// ```compile_fail
-/// use lite::Observable;
+/// use borrow_lite::Observable;
 ///
 /// let temperature = Observable::new(20i32);
 /// std::thread::spawn(move || {
@@ -135,7 +135,7 @@ struct Subs<T> {
 ///
 /// ```compile_fail
 /// fn is_sync<T: Sync>() {}
-/// is_sync::<lite::Observable<i32>>();
+/// is_sync::<borrow_lite::Observable<i32>>();
 /// ```
 ///
 /// This is deliberate: the observer list is `Rc<Cell<...>>`-shaped bookkeeping,
@@ -246,7 +246,7 @@ impl<T> Observable<T> {
     /// value" rule is not broken.
     ///
     /// ```
-    /// use lite::Observable;
+    /// use borrow_lite::Observable;
     ///
     /// let value = Observable::new(0i32);
     /// let ran = Observable::new(Vec::new());
@@ -314,7 +314,7 @@ impl<T> Observable<T> {
     /// Returns the [`Conflict`] if the value cannot be borrowed.
     ///
     /// ```
-    /// use lite::Observable;
+    /// use borrow_lite::Observable;
     ///
     /// let value = Observable::new(0i32);
     /// let inner = value.clone();
@@ -346,7 +346,7 @@ impl<T> Observable<T> {
     /// leaves by value.
     ///
     /// ```
-    /// use lite::Observable;
+    /// use borrow_lite::Observable;
     ///
     /// let value = Observable::new(vec![1, 2, 3]);
     /// assert_eq!(value.get(), vec![1, 2, 3]);
@@ -379,7 +379,7 @@ impl<T> Observable<T> {
     /// inside an [`update`](Self::update) closure.
     ///
     /// ```
-    /// use lite::Observable;
+    /// use borrow_lite::Observable;
     ///
     /// let value = Observable::new(0i32);
     /// let inner = value.clone();
@@ -427,7 +427,7 @@ impl<T> Observable<T> {
     /// the value is already borrowed for the notification.
     ///
     /// ```
-    /// use lite::Observable;
+    /// use borrow_lite::Observable;
     ///
     /// let value = Observable::new(0i32);
     /// let inner = value.clone();
@@ -483,7 +483,7 @@ impl<T> Observable<T> {
     /// anyone, with no notification and no borrow check.
     ///
     /// ```
-    /// use lite::Observable;
+    /// use borrow_lite::Observable;
     ///
     /// let mut temp = Observable::new(vec![20i32]);
     /// temp.get_mut().unwrap().push(21);
@@ -507,7 +507,7 @@ impl<T> Observable<T> {
     /// observers are never split off.
     ///
     /// ```
-    /// use lite::Observable;
+    /// use borrow_lite::Observable;
     ///
     /// let temp = Observable::new(20i32);
     /// let other = temp.clone();
@@ -559,7 +559,7 @@ impl<T> Observable<T> {
     /// already borrowed.
     ///
     /// ```
-    /// use lite::Observable;
+    /// use borrow_lite::Observable;
     ///
     /// let temp = Observable::new(vec![20i32]);
     /// let seen = Observable::new(Vec::new());
@@ -592,7 +592,7 @@ impl<T> Observable<T> {
     /// See [`update`](Self::update).
     ///
     /// ```
-    /// use lite::Observable;
+    /// use borrow_lite::Observable;
     ///
     /// let temp = Observable::new(vec![20i32]);
     /// assert_eq!(temp.take(), vec![20]);
@@ -622,7 +622,7 @@ impl<T> Observable<T> {
     /// case inside an observer.
     ///
     /// ```
-    /// use lite::Observable;
+    /// use borrow_lite::Observable;
     ///
     /// let temp = Observable::new(vec![1i32, 2]);
     /// let inner = temp.clone();
@@ -685,7 +685,7 @@ impl<T> Observable<T> {
     /// touching the value.
     ///
     /// ```
-    /// use lite::Observable;
+    /// use borrow_lite::Observable;
     ///
     /// let value = Observable::new(0i32);
     /// value.observe(|_| {}); // a notification with something to run
