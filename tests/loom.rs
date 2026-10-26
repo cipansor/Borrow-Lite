@@ -332,15 +332,19 @@ fn a_reader_and_a_writer_are_never_inside_together() {
 /// This is a regression test for a real trap in a single-word design. A reader
 /// that claims its slot with `fetch_add` and *then* checks the writer bit must
 /// undo the increment if it sees a writer - but the undo is a second atomic op,
-/// and a writer that releases in between (its `store(0)`) turns the undo into
-/// `0 - READER`, which wraps to `usize::MAX`. The cell is then stuck forever:
-/// the count is huge and the low bit is set.
+/// and if a writer release could touch the same word in between, the undo would
+/// run against the writer's value instead of the reader's own increment and the
+/// count could wrap.
 ///
-/// The read path therefore uses `compare_exchange` rather than
-/// `fetch_add`/`fetch_sub`. The CAS either claims the slot against a word with
-/// no writer bit, or fails and leaves the word alone; there is no separate undo
-/// to race. This model is what caught it - a 200,000-iteration stress loop did
-/// not, because the window is a few instructions wide.
+/// The shipped design avoids that by keeping the two pieces of bookkeeping in
+/// separate words. `try_shared` claims its slot with `fetch_add` on `shared`,
+/// re-checks the `writer` word, and on a writer undoes the increment with
+/// `fetch_sub`. The writer never writes `shared` at all - it only claims and
+/// releases `writer` - so the undo can only ever subtract the reader's own
+/// increment and the count cannot wrap. This model is what guards the property:
+/// a 200,000-iteration stress loop would not have caught it, because the window
+/// is a few instructions wide and the interleaving has to be enumerated rather
+/// than raced for.
 #[test]
 fn a_refused_reader_does_not_wrap_the_count() {
     loom::model(|| {

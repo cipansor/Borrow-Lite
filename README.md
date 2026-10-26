@@ -1299,7 +1299,7 @@ re-entrancy rules, and self-removal. Their value was checked by mutation rather
 than assumed:
 
 * `borrow_ops`: making `try_exclusive` ignore live readers is caught within
-  seconds, while deleting the second `exclusive` load in `try_shared` is *not* -
+  seconds, while deleting the second `writer` load in `try_shared` is *not* -
   that load only matters across threads, which is exactly the gap Miri and loom
   cover.
 * `observers`: making `unobserve` always report `false` is caught immediately.
