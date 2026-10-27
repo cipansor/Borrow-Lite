@@ -159,6 +159,87 @@ fn write_shared(c: &mut Criterion) {
     group.finish();
 }
 
+/// `Shared` against the other cross-thread cells, in the release profile the
+/// README quotes: `parking_lot::RwLock` (the word-sized lock) and `AtomicU64`
+/// (the lock-free counter `Shared` is *not* a replacement for).
+///
+/// The point is the honest column: `Shared` beats both `RwLock`s on the fast
+/// path, and loses to a bare atomic by an order of magnitude on read, because a
+/// borrow has to write a shared cache line and a `load` does not. Neither is a
+/// claim in prose - these are the numbers behind the README table.
+fn shared_vs_alternatives(c: &mut Criterion) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let borrow_cell: Shared<u64> = shared(0);
+    let pl_cell = Arc::new(parking_lot::RwLock::new(0u64));
+    let atomic = Arc::new(AtomicU64::new(0));
+    let plain = Arc::new(0u64);
+    let swapped = Arc::new(arc_swap::ArcSwap::from_pointee(0u64));
+
+    let mut group = c.benchmark_group("alternatives/read");
+    // The floor: a read-only shared value. Nothing counts, so nothing can be
+    // refused - the number the README says `Shared` cannot reach.
+    group.bench_function("std/Arc<T>", |b| {
+        b.iter(|| black_box(*plain));
+    });
+    group.bench_function("arc_swap/ArcSwap", |b| {
+        b.iter(|| black_box(**swapped.load()));
+    });
+    group.bench_function("std/AtomicU64", |b| {
+        b.iter(|| black_box(atomic.load(Ordering::SeqCst)));
+    });
+    group.bench_function("parking_lot/RwLock", |b| {
+        b.iter(|| black_box(*pl_cell.read()));
+    });
+    group.bench_function("borrow_lite/Shared", |b| {
+        b.iter(|| black_box(borrow_cell.with(|v| *v)));
+    });
+    group.finish();
+
+    let mut group = c.benchmark_group("alternatives/write");
+    group.bench_function("std/AtomicU64", |b| {
+        b.iter(|| atomic.store(black_box(1), Ordering::SeqCst));
+    });
+    group.bench_function("parking_lot/RwLock", |b| {
+        b.iter(|| *pl_cell.write() = black_box(1));
+    });
+    group.bench_function("borrow_lite/Shared", |b| {
+        b.iter(|| borrow_cell.with_mut(|v| *v = black_box(1)));
+    });
+    group.finish();
+}
+
+/// `Unchecked<T>` against `UnsafeCell<T>` and the counting cells.
+///
+/// The `unsafe-unchecked` mode exists to be free, and the only honest way to
+/// say "free" is to show it is the same code the compiler emits for
+/// `UnsafeCell`, i.e. no borrow flag at all. It is not a claim that the
+/// *checking* cells are slow - they check, and that is the point.
+fn unchecked_baseline(c: &mut Criterion) {
+    #[cfg(feature = "unsafe-unchecked")]
+    {
+        use borrow_lite::unchecked;
+        use std::cell::UnsafeCell;
+
+        let raw = UnsafeCell::new(0u64);
+        let un = unchecked(0u64);
+
+        let mut group = c.benchmark_group("unchecked/read");
+        group.bench_function("std/UnsafeCell", |b| {
+            // SAFETY: single-threaded, no live `&mut`.
+            b.iter(|| black_box(unsafe { *raw.get() }));
+        });
+        group.bench_function("borrow_lite/Unchecked", |b| {
+            // SAFETY: single-threaded, no live `&mut`.
+            b.iter(|| black_box(unsafe { *un.borrow_unchecked() }));
+        });
+        group.finish();
+    }
+    // Without the feature there is nothing to measure; the group is simply empty.
+    #[cfg(not(feature = "unsafe-unchecked"))]
+    let _ = c;
+}
+
 /// The cost of a refused borrow: the success path, then the `Err` path.
 fn conflict_path(c: &mut Criterion) {
     let std_cell = Rc::new(RefCell::new(0u64));
@@ -589,6 +670,8 @@ criterion_group!(
     churn_local,
     read_shared,
     write_shared,
+    shared_vs_alternatives,
+    unchecked_baseline,
     conflict_path,
     clone_handle,
     allocation,

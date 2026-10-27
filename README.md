@@ -180,6 +180,25 @@ So the claim is deliberately not "always 50% shorter". It is "the same length
 for one borrow, and 20-81% shorter the moment there is a pattern" - which is
 where `Rc<RefCell<T>>` and `Arc<RwLock<T>>` stop being fun.
 
+### The same tasks in Python
+
+For a reader coming from a language without a borrow checker, the same three
+tasks are shorter still - and it is worth saying why, because it is not a win:
+
+| Task | Python | chars | `borrow_lite` | chars |
+|---|---|---|---|---|
+| push onto a shared list | `stats.append(4)` | 15 | `stats.with_mut(\|v\| v.push(4));` | 30 |
+| increment a shared counter | `counter[0] += 1` | 15 | `counter.with_mut(\|v\| *v += 1);` | 30 |
+| read a shared length | `len(stats)` | 10 | `stats.with(\|v\| v.len());` | 24 |
+
+The Python column is shorter because there is nothing to check. Every Python
+object is a shared reference with no borrow flag, so there is no borrow to
+refuse and no conflict to report - the second line is shorter for exactly the
+reason the first line is unsafe in Rust. `borrow_lite` is not competing with
+Python here; it is competing with `RefCell` while keeping a *located* refusal,
+which Python cannot offer at all. `tests/ergonomics.rs` pins these six numbers so
+the comment cannot drift.
+
 ### Construct by construct
 
 The measured table above covers the *repetitive* lines (reads, writes, field
@@ -796,11 +815,43 @@ not be used at all.
 
 ### Where `borrow_lite` wins, and by how much
 
-- **Against `RefCell`**: the borrow path costs about +0.3 ns (1.51 vs 1.19 ns
-  for a read). In exchange, a refused borrow names the location of both the
-  attempt and the holder instead of saying `already borrowed`. It also adds
-  `try_*`, so a conflict can be a value instead of a panic. `RefCell` has one
-  thing `borrow_lite` lacked - `get_mut` - and that gap is now closed.
+- **In a release build, with `--no-default-features`, it matches `RefCell` and
+  `Rc<RefCell>` and beats both `RwLock`s.** The borrow path with `diagnostics`
+  off is a load and a store with no `Location` to write, so the single-threaded
+  cell costs what `RefCell` costs; the threaded cell is faster than `RwLock` and
+  `parking_lot::RwLock` on the fast path because it never has to be able to
+  park a waiter. Criterion medians, `cargo bench --no-default-features`,
+  release, rustc 1.99.1:
+
+  | Operation | `std` | `borrow_lite` (no `diagnostics`) | Ratio |
+  |---|---|---|---|
+  | read, one thread | `Rc<RefCell>` 1.19 ns | `Local` 1.19 ns | **1.00x** |
+  | write, one thread | `Rc<RefCell>` 1.49 ns | `Local` 1.47 ns | **0.99x** |
+  | read, shared | `RwLock` 5.15 ns | `Shared` 4.16 ns | **0.81x** |
+  | write, shared | `RwLock` 4.66 ns | `Shared` 2.35 ns | **0.50x** |
+  | read, shared | `parking_lot` 5.93 ns | `Shared` 4.24 ns | **0.72x** |
+  | write, shared | `parking_lot` 5.18 ns | `Shared` 2.37 ns | **0.46x** |
+
+  The cells it does **not** beat are stated with their gap, and the two regimes
+  are kept apart. On the single-threaded fast path a bare `AtomicU64` read is
+  0.60 ns against `Shared`'s 4.25 ns (about 7x), because a load does not write a
+  shared cache line and a borrow must; a plain `Arc<T>` deref is the same 0.60 ns
+  and is free for the same reason. `arc_swap::ArcSwap::load()` is *not* free on
+  that path either - it is 4.98 ns, slightly *slower* than `Shared`, because it
+  takes a guard - and `Snapshot<T>` (0.66 ns) is the cell to reach for when a
+  read-only fast path is what you want. What `arc_swap`/`Arc<T>` win is the
+  *contended read-mostly* regime, not the fast path: at eight threads on
+  read-mostly work `Shared` loses by hundreds of times (120 ms against 251 µs),
+  because every reader writes the borrow count's cache line and an `Arc` read
+  does not. Both numbers are in the section below; neither is a claim to have
+  been closed.
+
+- **Against `RefCell`** (with `diagnostics` on, the default): the borrow path
+  costs about +0.3 ns (1.51 vs 1.19 ns for a read). In exchange, a refused
+  borrow names the location of both the attempt and the holder instead of saying
+  `already borrowed`. It also adds `try_*`, so a conflict can be a value instead
+  of a panic. `RefCell` has one thing `borrow_lite` lacked - `get_mut` - and that
+  gap is now closed.
 - **`Inline` as a drop-in for `RefCell`**: swapping
   `use std::cell::{Cell, RefCell}` for `use borrow_lite::Inline as RefCell` in
   `markup5ever_rcdom` - a real HTML parser, not a benchmark harness - compiles

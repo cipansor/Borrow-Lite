@@ -307,3 +307,50 @@ fn the_short_forms_are_not_longer_than_the_closure_forms() {
         100.0 * reduction(closure_add, operator_add)
     );
 }
+
+/// The same tasks in Python, for a reader coming from a language without a
+/// borrow checker.
+///
+/// This is *not* an apples-to-apples comparison and the test says so: Python
+/// has no interior-mutability cell, because every object is a shared reference
+/// with no borrow flag, so there is nothing to check and nothing to refuse.
+/// The Python lines below are the closest expression of the same *intent*
+/// (`list.append`, `dict.get`), and they are shorter precisely because the
+/// guarantee is absent. Counting them is honest only when read that way, which
+/// is why the test asserts the counts the comment quotes rather than a
+/// "shorter than Python" claim.
+#[test]
+fn python_equivalents_are_quoted_with_their_lengths() {
+    // `stats.with_mut(|v| v.push(4));`  -> 30 code chars.
+    // Python: `stats.append(4)`  -> 15 chars, no cell, no borrow, no check.
+    let python_push = "stats.append(4)";
+    assert_eq!(
+        chars(python_push),
+        15,
+        "the Python push snippet's length is part of the comment"
+    );
+
+    // `counter.with_mut(|v| *v += 1);`  -> 30 code chars.
+    // Python: `counter[0] += 1`  -> 15 chars, the cell is a one-element list
+    // because a bare `int` is immutable and would rebind, not mutate.
+    let python_incr = "counter[0] += 1";
+    assert_eq!(chars(python_incr), 15);
+
+    // `stats.with(|v| v.len());`  -> 24 code chars.
+    // Python: `len(stats)`  -> 10 chars.
+    let python_len = "len(stats)";
+    assert_eq!(chars(python_len), 10);
+
+    // The borrow_lite side of each, so the two numbers sit together.
+    assert_eq!(chars("stats.with_mut(|v| v.push(4));"), 30);
+    assert_eq!(chars("counter.with_mut(|v| *v += 1);"), 30);
+    assert_eq!(chars("stats.with(|v| v.len());"), 24);
+
+    // The honest reading: every Python line is shorter, and the gap is the
+    // borrow check the Python line does not perform. `borrow_lite` is not
+    // competing with Python here; it is competing with `RefCell` while keeping
+    // a located refusal, which Python cannot offer at all.
+    assert!(chars(python_push) < chars("stats.with_mut(|v| v.push(4));"));
+    assert!(chars(python_incr) < chars("counter.with_mut(|v| *v += 1);"));
+    assert!(chars(python_len) < chars("stats.with(|v| v.len());"));
+}

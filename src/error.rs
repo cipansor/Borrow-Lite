@@ -177,6 +177,13 @@ impl Conflict {
 
     /// The panic payload used by [`borrow`](crate::Inner::borrow) and
     /// [`borrow_mut`](crate::Inner::borrow_mut).
+    ///
+    /// `#[cold]` because this is only reached when a borrow is *refused*, which
+    /// is the exceptional path: marking it keeps the formatting code out of the
+    /// inline body of `borrow`/`borrow_mut`, so the fast path stays a load and a
+    /// store. The success path never calls it.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn into_panic_message(self) -> String {
         let mut out = String::from("borrow_lite: cell is already ");
         out.push_str(self.kind.as_str());
