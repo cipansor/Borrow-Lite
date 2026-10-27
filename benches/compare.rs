@@ -14,7 +14,9 @@ use std::hint::black_box;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
-use borrow_lite::{Conflict, Inline, Local, ReadGuard, Shared, cell, inline, local, shared};
+use borrow_lite::{
+    Conflict, Inline, Local, ReadGuard, Shared, Snapshot, cell, inline, local, shared,
+};
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 
 /// Shared read borrow, then read the value through the guard.
@@ -123,6 +125,13 @@ fn read_shared(c: &mut Criterion) {
             let guard = borrow_cell.borrow();
             black_box(*guard)
         });
+    });
+    // The read-mostly alternative: one `Acquire` load, no counter. It is not a
+    // borrow - there is nothing to refuse - so it is the floor for "read a
+    // shared value", next to the two cells that count.
+    let snapshot = Snapshot::new(0u64);
+    group.bench_function("borrow_lite/Snapshot", |b| {
+        b.iter(|| black_box(*snapshot.load()));
     });
     group.finish();
 }

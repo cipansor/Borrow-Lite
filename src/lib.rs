@@ -178,12 +178,14 @@ mod wait;
 
 mod macros;
 mod observ;
+mod snapshot;
 mod sync;
 
 pub use crate::error::{Conflict, ConflictKind};
 pub use crate::guards::{ReadGuard, WriteGuard};
 pub use crate::inner::Inner;
 pub use crate::observ::{MAX_NOTIFICATION_ROUNDS, Observable, ObserverId};
+pub use crate::snapshot::Snapshot;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use crate::wait::{retry, wait};

@@ -2,27 +2,34 @@
 
 Shared, mutable data in Rust without the parts that usually bite you.
 
-`borrow_lite` is a small experiment in ergonomics, not a new borrow checker. It gives
-three types that cover the three shapes people actually write, and it changes
-what happens when a borrow is refused: instead of a bare
+`borrow_lite` is a small experiment in ergonomics, not a new borrow checker. It
+gives three types that cover the three shapes people actually write, plus a
+read-mostly cell for the case those three are worst at, and it changes what
+happens when a borrow is refused: instead of a bare
 `already borrowed: BorrowMutError`, you get an error that names the file and
 line of the borrow that is in the way.
 
 The value semantics are unchanged. What changes is the failure mode, and how
 easy it is to write code that never hits it.
 
-## The three shapes
+## The shapes
 
 | Shape | std | `borrow_lite` |
 |---|---|---|
 | one owner, value stored inline | `RefCell<T>` | `Inline<T>` |
 | shared + mutable, one thread | `Rc<RefCell<T>>` | `Local<T>` |
 | shared + mutable, many threads | `Arc<RwLock<T>>` | `Shared<T>` |
+| read-mostly, replaced wholesale | `ArcSwap<T>` | `Snapshot<T>` |
 
 `Inline<T>` is the cheapest: no allocation, no reference count, and `Send` when
 `T` is - the same auto traits as `RefCell<T>`. `Local<T>` and `Shared<T>` add
 sharing on top, at the cost of one allocation each. All three expose the same
 method set, so moving a value between shapes is a type change, not a rewrite.
+
+`Snapshot<T>` is a different bargain, not a fourth spelling of the same one: its
+reads take no counter at all, and its writes replace the whole value instead of
+mutating it in place. It is described under [many readers, no
+writer](#many-readers-no-writer), where that trade pays off.
 
 ```rust
 use borrow_lite::{Local, Shared, local, shared};
@@ -412,7 +419,7 @@ assert_eq!(self_swap.kind(), borrow_lite::ConflictKind::Writer); // named, not g
 `Local<T>` and `Shared<T>` carry the everyday traits `Rc<RefCell<T>>` and
 `Arc<RwLock<T>>` do - `==`, `Ord`, `Default`, `From`, `ptr_eq` - so you do not
 have to unwrap the cell to compare two of them or build one from a value. The
-example is in [The three shapes](#the-three-shapes).
+example is in [The shapes](#the-shapes).
 
 `==` on two *different* cells borrows both values, so it panics if one is
 borrowed - exactly as `Rc<RefCell<T>>` does. Comparing a cell with *itself*
@@ -672,6 +679,7 @@ not be used at all.
 | `parking_lot::RwLock` | runtime, blocks, no poison | one word, one CAS | heavy contention with long holds |
 | `arc_swap` / `Arc<T>` | none (immutable reads) | none on read | read-mostly: config, feature flags, routing tables |
 | `AtomicU64` and friends | none | one atomic op | counters and flags |
+| `borrow_lite::Snapshot<T>` | none (immutable reads) | one atomic load per read, unbounded retained values | read-mostly where the value can be replaced wholesale and need not outlive the cell |
 | `tokio::sync::Mutex` | runtime, async, blocks | async state machine | state held across `.await` |
 | `ghost-cell`, `qcell` | **compile time** | brand/token plumbing | when you can afford lifetimes everywhere to get zero runtime checks |
 | `borrow_lite` | runtime, reports, never blocks | ~0.3 ns per borrow | low contention, short borrows, re-entrancy, and diagnostics you can act on |
@@ -704,17 +712,19 @@ not be used at all.
   `SeqCst` handshake. That is the one place `parking_lot` is structurally ahead,
   and it is a real implementation difference, not a measurement artefact - but
   copying it does not pay, for the measured reason given below.
-- **Against `arc_swap` / `Arc<T>`**: `borrow_lite` loses outright on read-mostly
-  work - 152 ms against 250 µs at eight threads, 600x - because every reader
-  writes a shared cache line to record its borrow, and `arc_swap` readers do
-  not. There is no version of a borrow-counting cell that closes this; the
-  counter *is* the cost. Use `arc_swap` when reads dominate and writes replace
-  the whole value.
+- **Against `arc_swap` / `Arc<T>`**: `Shared` loses outright on read-mostly
+  work - 120 ms against 251 µs at eight threads, hundreds of times - because
+  every reader writes a shared cache line to record its borrow, and `arc_swap`
+  readers do not. There is no version of a *borrow-counting* cell that closes
+  this; the counter is the cost. `Snapshot<T>` removes the counter and lands
+  within 1.3x of that floor, so for read-mostly work reach for it (or `arc_swap`
+  when the value must be owned past the cell); keep `Shared` for the cases that
+  need in-place mutation and conflict reporting.
 
 ### The gap that cannot be closed, and what to do instead
 
-The read-mostly 600x is structural: any cell that counts borrows must mutate
-shared state per borrow. Two things follow.
+The read-mostly gap is structural for any cell that counts borrows, because the
+count is shared state mutated per borrow. Two things follow.
 
 First, `borrow_lite` should say so, which it now does, rather than pretending to
 be a general `RwLock` replacement.
@@ -783,8 +793,10 @@ A later review of the same area found two more holes, both now closed:
 
 Say it plainly, because a crate that hides its own limits is not trustworthy:
 
-- **Many readers, no writer** -> `Arc<T>`, `arc_swap`, or a plain copy.
-  `borrow_lite` costs 600x here for a guarantee nobody needs.
+- **Many readers, no writer** -> `Arc<T>`, `arc_swap`, `Snapshot<T>`, or a
+  plain copy. `borrow_lite`'s counting cells cost hundreds of times more here
+  for a guarantee nobody needs; `Snapshot` drops the count and gets within 1.3x
+  of the atomic floor, but gives up in-place mutation and conflict reporting.
 - **High contention with long critical sections** -> `parking_lot::RwLock`.
   Parking a thread is the right shape when the wait is long; retrying is not.
 - **State held across `.await`** -> `tokio::sync::Mutex`. `borrow_lite`'s guards
@@ -1029,46 +1041,65 @@ section is long or the access pattern is a queue.
 
 Every other contended benchmark here involves a writer. The pure-read case is
 the one a read-write lock is meant to excel at, so it is worth measuring on its
-own. `cargo bench --bench readonly`, 500,000 reads per thread:
+own, and it is where [`Snapshot<T>`](#the-shapes) exists.
+`cargo bench --bench readonly`, 500,000 reads per thread, `cargo bench` medians:
 
-| Threads | `Arc` (no checking) | `borrow_lite` | `Arc<RwLock>` |
-|---|---|---|---|
-| 1 | 47 µs | 2.00 ms | 2.68 ms |
-| 2 | 79 µs | 20.6 ms | 26.2 ms |
-| 4 | 128 µs | 69.8 ms | 86.2 ms |
-| 8 | 250 µs | 152 ms | 162 ms |
+| Threads | `Arc` (no checking) | `AtomicU64` | `Snapshot` | `ArcSwap` | `Shared` | `Arc<RwLock>` |
+|---|---|---|---|---|---|---|
+| 1 | 51 µs | 332 µs | 433 µs | 2.50 ms | 1.99 ms | 2.69 ms |
+| 2 | 83 µs | 391 µs | 505 µs | 2.62 ms | 16.8 ms | 22.1 ms |
+| 4 | 136 µs | 700 µs | 891 µs | 4.84 ms | 67.3 ms | 80.6 ms |
+| 8 | 251 µs | 1.40 ms | 1.87 ms | 9.98 ms | 120 ms | 164 ms |
 
-The first column is the surprise. With no borrow bookkeeping at all, 2.5 million
-reads across eight threads take 250 µs. Add bookkeeping and the same work takes
-152 ms - **600x slower**, and `borrow_lite` is the faster of the two cells. The
-cost is not the cell; it is that every reader writes to a shared cache line.
+Three things fall out of this table.
 
-`borrow_lite` still wins on this workload, but the margin is thinner than it
-looks: 1.2x at four threads and 1.06x at eight, not the 1.3x to 1.8x an earlier
-version of this table claimed. The eight-thread row is the worst in the file for
-reproducibility - `borrow_lite` measured 152 ms, 159 ms and 152 ms on three runs,
-and `RwLock` 162 ms, 157 ms and 184 ms - because eight threads on four cores are
-oversubscribed and the median depends on how the scheduler happened to interleave
-them. Trust the shape (both cells are hundreds of times slower than no checking,
-and `borrow_lite` is not the loser), not the last digit. It wins because
-`AtomicState::try_shared` is one `fetch_add` and one load, while `RwLock` has to
-do its own atomic work and touch its futex state. Both are paying the same
-price for the same reason: the counter that records "someone is reading" is
-shared mutable state, so readers serialise on it.
+**The counter is the cost, not the cell.** With no bookkeeping at all, 4 million
+reads across eight threads take 251 µs. `Shared` and `RwLock` take 120 ms and
+164 ms for the same work - **hundreds of times slower** - because every read
+borrow does a `fetch_add` on one shared counter, so readers serialise on the same
+cache line. `Shared` is the faster of the two cells (1.4x at eight threads), but
+both are in the same regime.
+
+**Removing the counter closes the gap.** `Snapshot` reads are a single `Acquire`
+load with no increment, so readers never touch shared state. At eight threads
+that is 1.87 ms against `Shared`'s 120 ms - **64x** - and within 1.3x of the
+`AtomicU64` floor, which is the same single load without a value behind it. The
+first row also shows why `Snapshot` is not simply "a faster `Shared`": it has
+given up the reader count, so it cannot report a conflict, and a write replaces
+the whole value rather than mutating in place.
+
+**`Snapshot` beats `arc_swap` on this workload, and the reason is instructive.**
+`ArcSwap::load` hands back a refcounted handle, so every read is an `Arc` clone
+- an atomic increment and later decrement on a shared count. `Snapshot::load`
+borrows the cell instead, so a read is one load. Measured here that is 5x at one
+thread (433 µs vs 2.50 ms) and 5.3x at eight (1.87 ms vs 9.98 ms). The price is
+that the `&T` cannot outlive the `Snapshot` (no refcount means no way to own it
+independently), and that superseded values are kept until the cell is dropped.
+`arc_swap` wins when you need to hold the value past the cell, or write from many
+threads with lock-free swaps; `Snapshot` wins when reads dominate and the value
+is replaced occasionally.
+
+`borrow_lite`'s own margin over `RwLock` is thinner than it looks: 1.2x at four
+threads and 1.4x at eight. The eight-thread row is the worst in the file for
+reproducibility - `Shared` measured 120 ms and 132 ms on two runs, `RwLock`
+164 ms and 177 ms - because eight threads on four cores are oversubscribed and
+the median depends on how the scheduler interleaved them. Trust the shape, not
+the last digit.
 
 Shared borrows genuinely coexist - they do not queue as exclusive borrows. The
 group `readonly/hold` puts every reader behind a barrier while holding a borrow,
-so all N are provably inside at once, and it costs the same as `RwLock` (311 µs
-vs 318 µs at eight threads, both dominated by the barrier itself). The
-coexistence is asserted in the test suite too, in
-`shared_borrows_coexist_across_threads`.
+so all N are provably inside at once, and it costs the same as `RwLock` (both
+dominated by the barrier itself). The coexistence is asserted in the test suite
+too, in `shared_borrows_coexist_across_threads`.
 
-The practical reading: if you have many threads reading one value and no writer,
-do not put it behind either cell. Copy it, or use `Arc<T>` with an
-`AtomicU64`/`AtomicUsize` if it is a counter. A borrow-checking cell buys you
-nothing when nobody is writing, and costs 600x.
+The practical reading, by what you have:
 
-So: `Shared<T>` is a good fit for low contention, short borrows, and
+- many readers, value replaced occasionally -> `Snapshot<T>`
+- many readers, value is one scalar -> `AtomicU64`/`AtomicUsize`
+- many readers, value must be owned past the cell -> `ArcSwap`
+- many readers, never written -> a plain `Arc<T>` copy, or copy it out
+
+`Shared<T>` is still the right cell for low contention, short borrows, and
 re-entrancy, where a `RwLock` would deadlock instead of reporting a `Conflict`.
 If you do contend, retry with `yield_now` rather than `spin_loop`. And if the
 borrow is held for a long time, use a real lock - a busy-wait is the wrong shape

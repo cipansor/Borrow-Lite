@@ -10,6 +10,11 @@
 //! they do serialise on that line. `Arc<T>` without any borrow bookkeeping is
 //! the zero-cost floor to compare against.
 //!
+//! [`Snapshot`](borrow_lite::Snapshot) and `arc_swap::ArcSwap` are the two
+//! rows that remove the counter: a read is a bare load, so readers do not touch
+//! a shared line at all. They are the answer to "is the count the cost?", and
+//! they are measured next to `Shared` rather than argued about.
+//!
 //! Groups:
 //!
 //! * `readonly/threads` - N threads reading as fast as they can, 1 to 8 threads
@@ -28,7 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, RwLock};
 use std::time::Duration;
 
-use borrow_lite::{Shared, shared};
+use borrow_lite::{Shared, Snapshot, shared};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 const READS_PER_THREAD: u64 = 500_000;
@@ -135,6 +140,97 @@ fn read_saturation(c: &mut Criterion) {
                                     let mut total = 0u64;
                                     for _ in 0..READS_PER_THREAD {
                                         total += *plain;
+                                    }
+                                    total
+                                })
+                            })
+                            .collect();
+                        handles.into_iter().map(|h| h.join().unwrap()).sum::<u64>()
+                    });
+                    assert_eq!(sum, threads * READS_PER_THREAD * 7);
+                    black_box(sum)
+                });
+            },
+        );
+
+        // The cheapest possible "load" with an atomic involved: no cell, no
+        // borrow, just one `Acquire` load. It bounds how fast a counter-free
+        // read can be, so `Snapshot` below can be read against it.
+        let atomic = Arc::new(AtomicU64::new(7));
+        group.bench_with_input(
+            BenchmarkId::new("std/AtomicU64", threads),
+            &threads,
+            |b, &threads| {
+                b.iter(|| {
+                    let sum = std::thread::scope(|scope| {
+                        let handles: Vec<_> = (0..threads)
+                            .map(|_| {
+                                let atomic = Arc::clone(&atomic);
+                                scope.spawn(move || {
+                                    let mut total = 0u64;
+                                    for _ in 0..READS_PER_THREAD {
+                                        total += black_box(atomic.load(Ordering::Acquire));
+                                    }
+                                    total
+                                })
+                            })
+                            .collect();
+                        handles.into_iter().map(|h| h.join().unwrap()).sum::<u64>()
+                    });
+                    assert_eq!(sum, threads * READS_PER_THREAD * 7);
+                    black_box(sum)
+                });
+            },
+        );
+
+        // `Snapshot` trades the reader count for a bare load: no `fetch_add`
+        // per read, so readers never touch a shared line. It cannot report a
+        // conflict - there is no borrow to refuse - which is why it is a
+        // separate type rather than a mode of `Shared`. This is the row that
+        // shows whether dropping the count buys anything at N readers.
+        let snapshot = Arc::new(Snapshot::new(7u64));
+        group.bench_with_input(
+            BenchmarkId::new("borrow_lite/Snapshot", threads),
+            &threads,
+            |b, &threads| {
+                b.iter(|| {
+                    let sum = std::thread::scope(|scope| {
+                        let handles: Vec<_> = (0..threads)
+                            .map(|_| {
+                                let snapshot = Arc::clone(&snapshot);
+                                scope.spawn(move || {
+                                    let mut total = 0u64;
+                                    for _ in 0..READS_PER_THREAD {
+                                        total += black_box(*snapshot.load());
+                                    }
+                                    total
+                                })
+                            })
+                            .collect();
+                        handles.into_iter().map(|h| h.join().unwrap()).sum::<u64>()
+                    });
+                    assert_eq!(sum, threads * READS_PER_THREAD * 7);
+                    black_box(sum)
+                });
+            },
+        );
+
+        // The crate `Snapshot` is modelled on, measured directly so the claim
+        // "the same shape as arc_swap" is checkable rather than asserted.
+        let arc_swap = Arc::new(arc_swap::ArcSwap::from_pointee(7u64));
+        group.bench_with_input(
+            BenchmarkId::new("arc_swap/ArcSwap", threads),
+            &threads,
+            |b, &threads| {
+                b.iter(|| {
+                    let sum = std::thread::scope(|scope| {
+                        let handles: Vec<_> = (0..threads)
+                            .map(|_| {
+                                let arc_swap = Arc::clone(&arc_swap);
+                                scope.spawn(move || {
+                                    let mut total = 0u64;
+                                    for _ in 0..READS_PER_THREAD {
+                                        total += black_box(**arc_swap.load());
                                     }
                                     total
                                 })
