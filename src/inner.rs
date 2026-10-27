@@ -97,6 +97,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// Borrow the value mutably, panicking with a located message if that is
     /// not possible right now.
     #[cfg_attr(feature = "diagnostics", track_caller)]
+    #[inline]
     pub fn borrow_mut(&self) -> WriteGuard<'_, T, S> {
         match self.state.try_exclusive(borrow_site()) {
             Ok(()) => WriteGuard::new(&self.state, self.value.get()),
@@ -106,6 +107,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
 
     /// Borrow the value mutably, reporting the conflict instead of panicking.
     #[track_caller]
+    #[inline]
     pub fn try_borrow_mut(&self) -> Result<WriteGuard<'_, T, S>, Conflict> {
         self.state
             .try_exclusive(borrow_site())
@@ -119,6 +121,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// on this cell; the panic message will name the call site that is still
     /// holding the borrow.
     #[track_caller]
+    #[inline]
     pub fn with_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         f(&mut self.borrow_mut())
     }
@@ -149,6 +152,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// Panics with a located message if the cell is already borrowed. Use
     /// [`try_update`](Self::try_update) for that case as a `Result`.
     #[track_caller]
+    #[inline]
     pub fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         self.with_mut(f)
     }
@@ -259,6 +263,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// Panics with a located message if the cell is already borrowed. Use
     /// [`try_set`](Self::try_set) for that case as a `Result`.
     #[track_caller]
+    #[inline]
     pub fn set(&self, value: T)
     where
         T: Sized,
@@ -319,6 +324,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// Panics with a located message if the cell is already borrowed. Use
     /// [`try_replace`](Self::try_replace) for that case as a `Result`.
     #[track_caller]
+    #[inline]
     pub fn replace(&self, value: T) -> T
     where
         T: Sized,
@@ -473,6 +479,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// assert!(cell.with(Vec::is_empty));
     /// ```
     #[track_caller]
+    #[inline]
     pub fn take(&self) -> T
     where
         T: Sized + Default,
@@ -536,6 +543,7 @@ impl<T: ?Sized, S: State> Inner<T, S> {
     /// and `other` are the same cell. Use [`try_swap`](Self::try_swap) for the
     /// non-panicking form.
     #[track_caller]
+    #[inline]
     pub fn swap(&self, other: &Self)
     where
         T: Sized,
@@ -601,6 +609,7 @@ impl<T: ?Sized> Inner<T, LocalState> {
     /// Borrow the value, panicking with a located message if that is not
     /// possible right now.
     #[cfg_attr(feature = "diagnostics", track_caller)]
+    #[inline]
     pub fn borrow(&self) -> ReadGuard<'_, T, LocalState> {
         match self.state.try_shared(borrow_site()) {
             Ok(recorder) => ReadGuard::new(&self.state, self.value.get(), recorder),
@@ -610,6 +619,7 @@ impl<T: ?Sized> Inner<T, LocalState> {
 
     /// Borrow the value, reporting the conflict instead of panicking.
     #[track_caller]
+    #[inline]
     pub fn try_borrow(&self) -> Result<ReadGuard<'_, T, LocalState>, Conflict> {
         self.state
             .try_shared(borrow_site())
@@ -618,6 +628,7 @@ impl<T: ?Sized> Inner<T, LocalState> {
 
     /// Run `f` with a shared borrow, released before this call returns.
     #[track_caller]
+    #[inline]
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         f(&self.borrow())
     }
@@ -654,6 +665,7 @@ impl<T: ?Sized> Inner<T, LocalState> {
     /// Panics with a located message if the cell is already borrowed. Use
     /// [`try_map`](Self::try_map) for that case as a `Result`.
     #[track_caller]
+    #[inline]
     pub fn map<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         self.with(f)
     }
@@ -707,6 +719,7 @@ impl<T: ?Sized> Inner<T, LocalState> {
     /// Panics with a located message if the value cannot be borrowed. Use
     /// [`try_get`](Self::try_get) for that case as a `Result`.
     #[track_caller]
+    #[inline]
     pub fn get(&self) -> T
     where
         T: Clone,
@@ -802,6 +815,7 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
     /// Borrow the value, panicking with a located message if that is not
     /// possible right now.
     #[track_caller]
+    #[inline]
     pub fn borrow(&self) -> ReadGuard<'_, T, AtomicState> {
         match self.state.try_shared(borrow_site()) {
             Ok(recorder) => ReadGuard::new(&self.state, self.value.get(), recorder),
@@ -811,6 +825,7 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
 
     /// Borrow the value, reporting the conflict instead of panicking.
     #[track_caller]
+    #[inline]
     pub fn try_borrow(&self) -> Result<ReadGuard<'_, T, AtomicState>, Conflict> {
         self.state
             .try_shared(borrow_site())
@@ -819,6 +834,7 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
 
     /// Run `f` with a shared borrow, released before this call returns.
     #[track_caller]
+    #[inline]
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         f(&self.borrow())
     }
@@ -855,6 +871,7 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
     /// Panics with a located message if the cell is already borrowed. Use
     /// [`try_map`](Self::try_map) for that case as a `Result`.
     #[track_caller]
+    #[inline]
     pub fn map<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         self.with(f)
     }
@@ -908,6 +925,7 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
     /// Panics with a located message if the value cannot be borrowed. Use
     /// [`try_get`](Self::try_get) for that case as a `Result`.
     #[track_caller]
+    #[inline]
     pub fn get(&self) -> T
     where
         T: Clone,

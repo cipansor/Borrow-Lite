@@ -1174,6 +1174,13 @@ mod closure_free_access {
             .cloned()
             .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
             .expect("a string panic message");
+        // The message must say the cell is busy in both modes; with diagnostics
+        // off there is no location to name, which is the whole point of the
+        // feature.
+        assert!(
+            message.contains("already"),
+            "the panic must say the cell is borrowed, got: {message}"
+        );
         #[cfg(feature = "diagnostics")]
         assert!(
             message.contains("held at"),

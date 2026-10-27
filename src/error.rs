@@ -38,8 +38,9 @@ impl ConflictKind {
 /// let err = cell.try_borrow_mut().unwrap_err();
 ///
 /// assert_eq!(err.kind(), borrow_lite::ConflictKind::Readers);
-/// assert!(err.holder().is_some()); // the `borrow()` call site
 /// assert!(err.to_string().contains("already immutably borrowed"));
+/// # #[cfg(feature = "diagnostics")]
+/// assert!(err.holder().is_some()); // the `borrow()` call site
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Conflict {

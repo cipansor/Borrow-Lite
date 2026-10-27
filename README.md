@@ -116,6 +116,7 @@ let cell = inline(0);
 let held = cell.borrow();
 let err = cell.try_borrow_mut().unwrap_err();
 // `Conflict` carries the location of the borrow in the way, its kind and count.
+# #[cfg(feature = "diagnostics")]
 assert!(err.to_string().contains("held at"));
 assert_eq!(err.kind(), borrow_lite::ConflictKind::Readers);
 assert_eq!(err.count(), Some(1));
@@ -488,10 +489,11 @@ tight loop the extra store costs a fraction of a nanosecond. The allocation
 count is the sharper difference, and it is asserted in the test suite:
 `Inline::new` allocates **zero** times, `Local::new` once.
 
-The bookkeeping is larger than `RefCell`'s, though: `Inline<u64>` is 32 bytes
+The bookkeeping is larger than `RefCell`'s, though: `Inline<u64>` is 24 bytes
 against `RefCell<u64>`'s 16, because it tracks a count, a flag and a location
-rather than a single flag. Fine for a struct; for a million-element array, use
-`Cell` or `RefCell`.
+rather than a single flag. Turn the `diagnostics` feature off and it is the
+same 16 bytes as `RefCell<u64>`, at the cost of the located message. Fine for a
+struct; for a million-element array, use `Cell` or `RefCell`.
 
 ## Threads
 
@@ -665,7 +667,7 @@ not be used at all.
 
 | Crate | Guarantee | Cost | When it wins |
 |---|---|---|---|
-| `std::cell::RefCell` | runtime, panics | none beyond a flag | when you want the smallest cell (16 bytes vs `Inline`'s 32) and the last few percent of speed, and can live with `already borrowed` |
+| `std::cell::RefCell` | runtime, panics | none beyond a flag | when you want the smallest cell (16 bytes vs `Inline`'s 24 with diagnostics on, 16 with them off) and the last few percent of speed, and can live with `already borrowed` |
 | `std::sync::RwLock` | runtime, blocks, poisons | park/unpark, futex | long critical sections, where parking beats retrying |
 | `parking_lot::RwLock` | runtime, blocks, no poison | one word, one CAS | heavy contention with long holds |
 | `arc_swap` / `Arc<T>` | none (immutable reads) | none on read | read-mostly: config, feature flags, routing tables |

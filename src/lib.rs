@@ -326,11 +326,13 @@ pub struct Shared<T: ?Sized>(Arc<Inner<T, state::AtomicState>>);
 /// invisible in any real workload, and it is what buys the message below. If a
 /// borrow conflict is what you are trying to debug, that is the trade.
 ///
-/// The bookkeeping also takes more room: `Inline<u64>` is 32 bytes against
+/// The bookkeeping also takes more room: `Inline<u64>` is 24 bytes against
 /// `RefCell<u64>`'s 16, because it carries a borrow count, an exclusive flag and
-/// the holder's location instead of a single flag. For a struct with a handful
-/// of cells that is nothing; for an array of millions of them it is the reason
-/// to use [`Cell`](core::cell::Cell) or `RefCell` instead.
+/// the holder's location instead of a single flag. Without the `diagnostics`
+/// feature the holder is dropped and it is the same 16 bytes as `RefCell<u64>`.
+/// For a struct with a handful of cells that is nothing; for an array of
+/// millions of them it is the reason to use [`Cell`](core::cell::Cell) or
+/// `RefCell` instead.
 ///
 /// ```
 /// use borrow_lite::Inline;
@@ -340,8 +342,13 @@ pub struct Shared<T: ?Sized>(Arc<Inner<T, state::AtomicState>>);
 /// let held = cell.borrow();
 /// let conflict = cell.try_borrow_mut().unwrap_err();
 /// // The message names the file and line of the borrow that is in the way.
+/// # #[cfg(feature = "diagnostics")]
 /// assert!(conflict.to_string().contains("held at"));
+/// # #[cfg(feature = "diagnostics")]
 /// assert_eq!(conflict.holder().map(|l| l.line()), Some(borrowed_at));
+/// # #[cfg(not(feature = "diagnostics"))]
+/// assert!(conflict.to_string().contains("already immutably borrowed"));
+/// # let _ = borrowed_at;
 /// drop(held);
 /// ```
 ///

@@ -165,10 +165,12 @@ impl LocalState {
 impl sealed::Sealed for LocalState {}
 
 impl State for LocalState {
+    #[inline]
     fn new() -> Self {
         Self::unborrowed()
     }
 
+    #[inline]
     fn try_shared(&self, wanted: &'static Location<'static>) -> Result<bool, Conflict> {
         // One load of the flags, reused for the writer test and the increment,
         // so the fast path is a load and a store like `RefCell`'s rather than
@@ -191,6 +193,7 @@ impl State for LocalState {
         Ok(recorder)
     }
 
+    #[inline]
     fn try_exclusive(&self, wanted: &'static Location<'static>) -> Result<(), Conflict> {
         let flags = self.flags.get();
         if flags == WRITER {
@@ -215,6 +218,7 @@ impl State for LocalState {
         Ok(())
     }
 
+    #[inline]
     fn end_shared(&self, recorder: bool) {
         let next = self.flags.get() - 1;
         self.flags.set(next);
@@ -230,10 +234,12 @@ impl State for LocalState {
         let _ = (recorder, next);
     }
 
+    #[inline]
     fn add_shared(&self) {
         add_local_reader(&self.flags);
     }
 
+    #[inline]
     fn end_exclusive(&self) {
         self.flags.set(0);
         #[cfg(feature = "diagnostics")]
@@ -312,6 +318,7 @@ impl AtomicState {
 impl sealed::Sealed for AtomicState {}
 
 impl State for AtomicState {
+    #[inline]
     fn new() -> Self {
         Self::unborrowed()
     }
@@ -350,6 +357,7 @@ impl State for AtomicState {
     // therefore be a soundness change with no measurement to justify it, so
     // none of them is weakened. See the `AtomicState` docs for the one window
     // (`try_exclusive`'s back-off) that a wider word could close.
+    #[inline]
     fn try_shared(&self, wanted: &'static Location<'static>) -> Result<bool, Conflict> {
         // One load, decoded from the value read, so the "is there a writer"
         // answer and the location cannot disagree.
@@ -372,6 +380,7 @@ impl State for AtomicState {
         Ok(false)
     }
 
+    #[inline]
     fn try_exclusive(&self, wanted: &'static Location<'static>) -> Result<(), Conflict> {
         // Claim the cell *and* publish the location in one step, so a reader that
         // sees the claim always sees the location with it. On failure the CAS
@@ -403,6 +412,7 @@ impl State for AtomicState {
         Ok(())
     }
 
+    #[inline]
     fn end_shared(&self, _recorder: bool) {
         // No holder to clear: the writer side is a separate word, and a reader
         // never touches it. Clearing it here would be the store that used to race
@@ -411,10 +421,12 @@ impl State for AtomicState {
         self.shared.fetch_sub(1, Ordering::Release);
     }
 
+    #[inline]
     fn end_exclusive(&self) {
         self.writer.store(core::ptr::null_mut(), Ordering::Release);
     }
 
+    #[inline]
     fn add_shared(&self) {
         // The caller already holds a shared borrow, which means the writer word is
         // null and cannot become non-null while this count is non-zero. `SeqCst`

@@ -29,6 +29,15 @@ jobs:
       - run: cargo clippy --features std --all-targets -- -D warnings
       - run: cargo test --features std --all-targets
       - run: cargo test --features std --doc
+      # `diagnostics` is on by default, so nothing above compiles the crate
+      # without it. That mode is the whole point of the feature (a 16-byte
+      # `Inline` and no holder to record), and it has its own test file
+      # (`tests/no_diagnostics.rs`) plus size assertions in `tests/safety.rs`.
+      # Without this step a doctest or an unused binding in that mode can rot
+      # unnoticed - which is exactly what happened once.
+      - run: cargo clippy --no-default-features --all-targets -- -D warnings
+      - run: cargo test --no-default-features --all-targets
+      - run: cargo test --no-default-features --doc
       # Broken intra-doc links are invisible otherwise, which is how three of
       # them survived until the docs were checked by hand.
       - run: cargo doc --no-deps
