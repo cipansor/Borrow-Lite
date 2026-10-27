@@ -247,8 +247,8 @@ fn the_macro_accepts_the_inline_keyword() {
 }
 
 /// Ordering for `Inline`, mirroring its `PartialEq`: by value under a shared
-/// borrow, with no self-comparison short-circuit (an `Inline` is never shared,
-/// and two shared borrows compose).
+/// borrow, with the same self-comparison short-circuit `Local`, `Shared` and
+/// `try_cmp` use.
 #[test]
 fn ordering_matches_refcell() {
     use core::cmp::Ordering;
@@ -265,16 +265,26 @@ fn ordering_matches_refcell() {
     assert!(a <= inline(1));
     assert_eq!(inline(1).cmp(&inline(2)), Ordering::Less);
 
-    // Self-comparison borrows twice, and two shared borrows compose - so it is
-    // fine, and it agrees with `RefCell`.
+    // Self-comparison short-circuits without borrowing, matching `try_cmp` and
+    // the shared/local cells.
     assert_eq!(
         a.partial_cmp(&inline(1)),
         std_a.partial_cmp(&RefCell::new(1))
     );
     assert_eq!(a.partial_cmp(&a), Some(Ordering::Equal));
+    assert_eq!(a.cmp(&a), Ordering::Equal);
+    assert_eq!(a.try_cmp(&a), Ok(Some(Ordering::Equal)));
 
-    // A live exclusive borrow makes a *distinct* comparison panic, like std.
+    // The short-circuit holds under a live exclusive borrow, so `==`, `cmp` and
+    // their `try_` twins cannot disagree about a cell compared with itself.
     let held = a.borrow_mut();
+    assert!(a == a);
+    assert_eq!(a.partial_cmp(&a), Some(Ordering::Equal));
+    assert_eq!(a.cmp(&a), Ordering::Equal);
+    assert_eq!(a.try_eq(&a), Ok(true));
+    assert_eq!(a.try_cmp(&a), Ok(Some(Ordering::Equal)));
+
+    // A *distinct* comparison still panics under the live borrow, like std.
     let ours = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a < b)).is_err();
     let theirs = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _h = std_a.borrow_mut();
@@ -283,6 +293,35 @@ fn ordering_matches_refcell() {
     .is_err();
     assert_eq!(ours, theirs, "panic behaviour must match RefCell");
     drop(held);
+}
+
+/// `Inline`'s `==`/`partial_cmp` agree with their `try_` twins for an
+/// irreflexive payload, the one case where the short-circuit is observable.
+///
+/// Before the short-circuit was added, `inline(NAN) == inline(NAN)` was `false`
+/// while `try_eq` was `Ok(true)` - the two entry points disagreed about the
+/// same cell, and `Local`/`Shared` agreed with neither's opposite. This pins
+/// them together, and against `RefCell`, which has no short-circuit at all.
+#[test]
+fn eq_and_try_eq_agree_on_an_irreflexive_payload() {
+    let a = inline(f64::NAN);
+    assert!(a == a, "`==` must short-circuit like `try_eq`");
+    assert_eq!(a.try_eq(&a), Ok(true));
+    assert_eq!(a.partial_cmp(&a), Some(core::cmp::Ordering::Equal));
+    assert_eq!(a.try_cmp(&a), Ok(Some(core::cmp::Ordering::Equal)));
+
+    // The short-circuit runs even under a live exclusive borrow, so it cannot
+    // panic where `try_eq` returns `Ok`.
+    let held = a.borrow_mut();
+    assert!(a == a);
+    assert_eq!(a.try_eq(&a), Ok(true));
+    drop(held);
+
+    // The consequence, stated plainly and shared with `Local`: a self-comparison
+    // of an irreflexive payload reports `true`, where `RefCell` reports `false`.
+    assert!(!(std::cell::RefCell::new(f64::NAN) == std::cell::RefCell::new(f64::NAN)));
+    let distinct = inline(f64::NAN);
+    assert!(a != distinct, "distinct cells still compare by value");
 }
 
 #[test]

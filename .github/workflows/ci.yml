@@ -138,6 +138,7 @@ jobs:
       - run: cargo install cargo-fuzz --locked
       - run: mkdir -p fuzz/corpus/borrow_ops && cargo fuzz run borrow_ops fuzz/corpus/borrow_ops fuzz/seeds/borrow_ops -- -max_total_time=120
       - run: mkdir -p fuzz/corpus/observers && cargo fuzz run observers fuzz/corpus/observers fuzz/seeds/observers -- -max_total_time=120
+      - run: mkdir -p fuzz/corpus/snapshot && cargo fuzz run snapshot fuzz/corpus/snapshot fuzz/seeds/snapshot -- -max_total_time=120
 
   # `cargo package` is the closest local check to `cargo publish`: it builds the
   # exact file set a user would download, in a fresh directory, with the

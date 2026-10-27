@@ -1,15 +1,17 @@
 //! Run with `cargo run --example demo`.
 //!
 //! A walk through the API, side by side with the `std` it replaces: the three
-//! shapes (`Local`, `Shared`, `Inline`), the closure-free and closure forms,
-//! conflicts as values, the `cell!` macro, and the threaded case. Each section
-//! shows the same small operation the `std` type would need and what `borrow_lite`
-//! prints when it goes wrong.
+//! shapes (`Local`, `Shared`, `Inline`), the read-mostly `Snapshot`, the
+//! closure-free and closure forms, conflicts as values, the `cell!` macro, and
+//! the threaded case. Each section shows the same small operation the `std` type
+//! would need and what `borrow_lite` prints when it goes wrong.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use borrow_lite::{Conflict, Inline, Local, Observable, Shared, cell, inline, local, shared};
+use borrow_lite::{
+    Conflict, Inline, Local, Observable, Shared, Snapshot, cell, inline, local, shared,
+};
 
 cell! {
     shared Stats, StatsData {
@@ -25,6 +27,7 @@ fn main() {
     conflicts_as_values();
     named_fields();
     inline_shape();
+    snapshot_shape();
     threaded();
     observers();
 }
@@ -146,6 +149,28 @@ fn inline_shape() {
         cell.try_borrow_mut().is_err()
     );
     drop(held);
+    println!();
+}
+
+fn snapshot_shape() {
+    println!("== Snapshot<T>: reads without a counter ==");
+    println!(
+        "Snapshot<u64> = {} bytes",
+        std::mem::size_of::<Snapshot<u64>>()
+    );
+
+    let config = Snapshot::new(String::from("v1"));
+    // A read is one `Acquire` load and no bookkeeping, so it cannot conflict.
+    println!("read = {}", config.load().as_str());
+    // A write replaces the whole value; the old one is retired, not mutated.
+    config.store(String::from("v2"));
+    println!("after store = {}", config.load().as_str());
+
+    // The trade, stated by the type: there is no `borrow_mut`, so a value
+    // cannot be mutated in place - it is replaced. Superseded values are kept
+    // alive until the cell is dropped, so a `&T` handed out by `load` stays
+    // valid. This is why it is not a drop-in `RwLock` replacement.
+    println!("into_inner = {}", config.into_inner().as_str());
     println!();
 }
 

@@ -1,6 +1,6 @@
 //! Handle and guard sizes, as a quick sanity check on the "no extra overhead"
 //! claim. Run with `cargo run --release --example sizes`.
-use borrow_lite::{Inline, Local, Shared, inline, local, shared};
+use borrow_lite::{Inline, Local, Shared, Snapshot, inline, local, shared};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -19,6 +19,10 @@ fn main() {
         "Shared<u64> = {} bytes (Arc<u64> = {} bytes)",
         std::mem::size_of::<Shared<u64>>(),
         std::mem::size_of::<Arc<u64>>()
+    );
+    println!(
+        "Snapshot<u64> = {} bytes (the read-mostly cell: value pointer + writer lock + retired list)",
+        std::mem::size_of::<Snapshot<u64>>()
     );
 
     let i = inline(0u64);

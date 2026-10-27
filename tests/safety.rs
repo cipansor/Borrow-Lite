@@ -131,9 +131,16 @@ const _: () = {
 /// same 16 as `RefCell<u64>`, which is the claim the feature exists to make.
 /// The `ReadGuard` shrinks with it (the recorder flag is dropped), so its size
 /// is asserted per mode too.
+///
+/// `Snapshot<u64>` is asserted at 40 bytes: a `current` pointer (8), the writer
+/// lock (8 after padding) and the retired `Vec` (24). It carries no
+/// `diagnostics`-dependent state, so the count is the same in both modes - which
+/// is worth pinning precisely because the crate's other cells *do* change with
+/// the feature.
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     use borrow_lite::Inline;
+    use borrow_lite::Snapshot;
     use borrow_lite::state::LocalState;
 
     #[cfg(feature = "diagnostics")]
@@ -147,6 +154,10 @@ const _: () = {
     #[cfg(not(feature = "diagnostics"))]
     assert!(core::mem::size_of::<borrow_lite::ReadGuard<'static, u64, LocalState>>() == 16);
     assert!(core::mem::size_of::<borrow_lite::WriteGuard<'static, u64, LocalState>>() == 16);
+
+    // The read-mostly cell is one pointer, the writer lock, and the retired
+    // list. None of it depends on `diagnostics`.
+    assert!(core::mem::size_of::<Snapshot<u64>>() == 40);
 };
 
 /// The regression for the bug this file found: a panicking observer used to

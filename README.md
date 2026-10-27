@@ -418,8 +418,9 @@ assert_eq!(self_swap.kind(), borrow_lite::ConflictKind::Writer); // named, not g
 
 `Local<T>` and `Shared<T>` carry the everyday traits `Rc<RefCell<T>>` and
 `Arc<RwLock<T>>` do - `==`, `Ord`, `Default`, `From`, `ptr_eq` - so you do not
-have to unwrap the cell to compare two of them or build one from a value. The
-example is in [The shapes](#the-shapes).
+have to unwrap the cell to compare two of them or build one from a value.
+`Inline<T>` carries the same set bar `ptr_eq` (there is no handle to compare).
+The example is in [The shapes](#the-shapes).
 
 `==` on two *different* cells borrows both values, so it panics if one is
 borrowed - exactly as `Rc<RefCell<T>>` does. Comparing a cell with *itself*
@@ -717,7 +718,7 @@ not be used at all.
   every reader writes a shared cache line to record its borrow, and `arc_swap`
   readers do not. There is no version of a *borrow-counting* cell that closes
   this; the counter is the cost. `Snapshot<T>` removes the counter and lands
-  within 1.3x of that floor, so for read-mostly work reach for it (or `arc_swap`
+  within 1.4x of that floor, so for read-mostly work reach for it (or `arc_swap`
   when the value must be owned past the cell); keep `Shared` for the cases that
   need in-place mutation and conflict reporting.
 
@@ -795,7 +796,7 @@ Say it plainly, because a crate that hides its own limits is not trustworthy:
 
 - **Many readers, no writer** -> `Arc<T>`, `arc_swap`, `Snapshot<T>`, or a
   plain copy. `borrow_lite`'s counting cells cost hundreds of times more here
-  for a guarantee nobody needs; `Snapshot` drops the count and gets within 1.3x
+  for a guarantee nobody needs; `Snapshot` drops the count and gets within 1.4x
   of the atomic floor, but gives up in-place mutation and conflict reporting.
 - **High contention with long critical sections** -> `parking_lot::RwLock`.
   Parking a thread is the right shape when the wait is long; retrying is not.
@@ -1062,7 +1063,7 @@ both are in the same regime.
 
 **Removing the counter closes the gap.** `Snapshot` reads are a single `Acquire`
 load with no increment, so readers never touch shared state. At eight threads
-that is 1.87 ms against `Shared`'s 120 ms - **64x** - and within 1.3x of the
+that is 1.87 ms against `Shared`'s 120 ms - **64x** - and within 1.4x of the
 `AtomicU64` floor, which is the same single load without a value behind it. The
 first row also shows why `Snapshot` is not simply "a faster `Shared`": it has
 given up the reader count, so it cannot report a conflict, and a write replaces
@@ -1158,6 +1159,13 @@ visible (`tests/allocations.rs`, which installs a `GlobalAlloc` and counts):
 A plain borrow never allocates, including the refusal path: a `Conflict` is a
 `Copy` struct of a few words, and only `to_string` builds the `String`.
 
+`Snapshot<T>` is on the same list, and its numbers are the ones that make its
+read path credible: `Snapshot::new` is **two** allocations (the value is boxed
+and the retired list is a `Vec` seeded with it), `load` allocates **nothing** -
+that is the whole point of the type - and a steady-state `store` allocates
+exactly **one**, the box for the new value. All three are asserted in
+`tests/allocations.rs`.
+
 Writing is where the cost is, and there is a surprise. `update` with **no
 observers at all** is still 25x a plain `with_mut` (25 ns against 1 ns), because
 every update enters the notification machinery - taking the observer list out of
@@ -1233,7 +1241,7 @@ cargo build --target thumbv7em-none-eabi
 cargo +1.85 build --all-targets
 ```
 
-CI runs each of these in its own job, plus Miri, loom and both fuzz targets.
+CI runs each of these in its own job, plus Miri, loom and all three fuzz targets.
 The `std` feature is additive: the default build is still `no_std` and is
 checked on a bare-metal target, so the helper cannot leak `std` into a build
 that did not ask for it.
@@ -1241,7 +1249,11 @@ that did not ask for it.
 `tests/safety.rs` covers the properties the other suites do not: that a panic
 while a borrow is alive releases it, that a panicking observer leaves the cell
 usable with its observers intact, and that the handles are one pointer wide
-(a `const` assertion, so it cannot silently stop checking).
+(a `const` assertion, so it cannot silently stop checking). The same file pins
+`Inline<u64>` at 24 bytes with `diagnostics` and 16 without it (the same 16 as
+`RefCell<u64>`), both guards, and `Snapshot<u64>` at 40 - the read-mostly cell's
+pointer, writer lock and retired list - all as `const` assertions, so a layout
+change fails the build rather than a printed example.
 
 `tests/behaviour.rs` also runs *differential* tests: the same script of
 operations against `Rc<RefCell<T>>`/`Arc<RwLock<T>>` and against `Local`/`Shared`,
@@ -1300,6 +1312,7 @@ LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --test loom --release
 # Fuzzing: operation scripts replayed against a shadow model
 cargo +nightly fuzz run borrow_ops fuzz/corpus/borrow_ops fuzz/seeds/borrow_ops
 cargo +nightly fuzz run observers fuzz/corpus/observers fuzz/seeds/observers
+cargo +nightly fuzz run snapshot fuzz/corpus/snapshot fuzz/seeds/snapshot
 ```
 
 The two corpus directories are deliberate. `fuzz/seeds/<target>` is tracked and
@@ -1322,20 +1335,35 @@ So `tests/loom.rs` checks the parts that do not need a global order - release
 frees the cell, readers do not conflict, two writers never lose an update,
 bookkeeping balances - and includes one test that asserts loom *does* accept the
 `SeqCst`-forbidden store-buffering outcome, so a passing run is never mistaken
-for proof that `SeqCst` is unnecessary. The global-order property is left to
+for proof that `SeqCst` is unnecessary. It also models `Snapshot`'s value
+pointer: a plain `u64` payload would make that test pass no matter how the
+pointer was published, so the payload carries its own loom atomic and the test
+fails if `store`'s `Release` or `load`'s `Acquire` is weakened (both verified by
+mutation). `Snapshot`'s `WriterLock` is a spin lock, and loom explores a spin
+lock's retry loop as an unbounded branch, so a *contended* `store` diverges the
+model - that property is left to `tests/concurrency.rs` under real threads. The
+global-order property of the borrow cell is likewise left to
 `tests/concurrency.rs` and Miri, neither of which has that limit.
 
 The fuzz targets replay each input as a script of operations against a small
 shadow model, and fail if the crate's answers disagree with it. `borrow_ops`
 covers the borrow protocol; `observers` covers subscription bookkeeping, the
-re-entrancy rules, and self-removal. Their value was checked by mutation rather
-than assumed:
+re-entrancy rules, and self-removal; `snapshot` covers whole-value replacement
+and the retirement contract - a reference taken before a `store` still reads the
+old value, and every published value is freed exactly once. Their value was
+checked by mutation rather than assumed:
 
 * `borrow_ops`: making `try_exclusive` ignore live readers is caught within
   seconds, while deleting the second `writer` load in `try_shared` is *not* -
   that load only matters across threads, which is exactly the gap Miri and loom
   cover.
 * `observers`: making `unobserve` always report `false` is caught immediately.
+* `snapshot`: reverting `into_inner` to remove the current value by pointer
+  equality - the zero-sized-`T` bug the crate actually had - is caught in under
+  a second, because the drop counter then reports fewer drops than creations.
+  The target runs the same script against a sized and a zero-sized payload for
+  exactly this reason; the sized one cannot see the bug, since its pointers
+  differ. The failing input is kept as `fuzz/seeds/snapshot/zst_into_inner_loses_retired_drops`.
 
 One thing is deliberately *not* fuzzed. `libfuzzer-sys` installs a panic hook
 that calls `std::process::abort()` before unwinding (see its `initialize`), so a

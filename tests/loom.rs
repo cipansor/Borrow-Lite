@@ -33,11 +33,23 @@
 //!   machine: a released borrow frees the cell, readers do not conflict with
 //!   each other, a writer never loses an update against another writer, and the
 //!   guard bookkeeping balances;
+//! * the `Release`/`Acquire` pair on `Snapshot`'s value pointer, so a reader
+//!   never sees a value that was not fully published;
 //! * that loom's limit is real, so nobody later reads a passing run as proof
 //!   that `SeqCst` is unnecessary.
 //!
 //! The global-order property itself is covered by `tests/concurrency.rs` under
 //! real threads, and by Miri. Neither is limited this way.
+//!
+//! # `Snapshot`'s writer lock is not model-checked
+//!
+//! `Snapshot::store` is serialised by `WriterLock`, a test-and-set spin lock.
+//! Loom explores a spin lock's retry loop as an unbounded branch, so a
+//! *contended* `store` diverges the model (*"exceeded maximum number of
+//! branches ... often caused by ... spin locks"*) rather than reporting a
+//! property. The lock's mutual exclusion under contention is therefore checked
+//! by `tests/concurrency.rs` under real threads, not here; the loom test below
+//! uses a single writer, which leaves the value pointer's visibility checkable.
 
 #![cfg(loom)]
 
@@ -484,6 +496,68 @@ fn a_cloned_guard_holds_the_borrow_after_the_original_is_dropped() {
         assert!(
             check_handle.try_borrow_mut().is_ok(),
             "the cloned borrow was leaked"
+        );
+    });
+}
+
+/// `Snapshot`'s value pointer, model-checked for the property loom can see.
+///
+/// # What this checks
+///
+/// `store` publishes the value pointer with `Release` and `load` reads it with
+/// `Acquire`. That pair is what guarantees a reader never observes a `T` that
+/// was only half-initialised on the writer's thread. Loom does not instrument
+/// the payload behind a raw pointer, so a plain `u64` payload would make this
+/// test pass no matter how the pointer was published. The payload therefore
+/// carries its own loom atomic: the writer constructs it, the reader reads it,
+/// and loom can then see whether that read happened *after* the construction
+/// was published.
+///
+/// This is not a theoretical concern - the test is mutation-sensitive in both
+/// directions, verified by hand:
+///
+/// * changing `store`'s `Release` to `Relaxed` fails the test;
+/// * changing `load`'s `Acquire` to `Relaxed` fails the test;
+/// * removing the publish entirely (`store` never writes `current`) fails it.
+///
+/// # Why there is one writer, not two
+///
+/// `WriterLock` is a test-and-set spin lock, and loom explores a spin lock's
+/// retry loop as an unbounded branch: a contended run diverges with *"Model
+/// exceeded maximum number of branches ... often caused by ... spin locks"*.
+/// That is a limitation of the model checker, not a bug in the lock. The lock's
+/// mutual exclusion under contention is therefore covered by
+/// `tests/concurrency.rs` under real threads, where writers genuinely race;
+/// with a single writer the lock is uncontended and loom completes, which is
+/// what leaves the visibility property checkable here.
+#[test]
+fn snapshot_readers_see_only_fully_published_values() {
+    // `loom::model` re-runs this closure once per explored interleaving.
+    loom::model(|| {
+        struct Payload(AtomicUsize);
+
+        let cell = Arc::new(borrow_lite::Snapshot::new(Payload(AtomicUsize::new(0))));
+
+        let writer_cell = cell.clone();
+        let writer = thread::spawn(move || writer_cell.store(Payload(AtomicUsize::new(1))));
+
+        let reader_cell = cell.clone();
+        let reader = thread::spawn(move || reader_cell.load().0.load(Ordering::Relaxed));
+
+        writer.join().unwrap();
+        let seen = reader.join().unwrap();
+
+        // The reader may run before the store, so it sees `0` or `1` - never a
+        // value that was not published.
+        assert!(
+            seen <= 1,
+            "a reader observed a payload that was never published: {seen}"
+        );
+        // The store completed and is visible to this thread.
+        assert_eq!(
+            cell.load().0.load(Ordering::Relaxed),
+            1,
+            "the store was lost"
         );
     });
 }

@@ -18,6 +18,13 @@
 //! | [`Local<T>`] | behind an `Rc` | `!Send`, `!Sync` | one allocation |
 //! | [`Shared<T>`] | behind an `Arc` | `Send + Sync` when `T` is | one allocation + atomics |
 //!
+//! [`Snapshot<T>`] is a fourth, different bargain rather than a fourth spelling
+//! of the same one: reads take no counter at all (so they never conflict and
+//! scale), but a write replaces the whole value and every superseded value is
+//! retained until the cell is dropped. Reach for it when the value is replaced
+//! occasionally and read constantly - a config, a routing table - not for a
+//! counter or a queue.
+//!
 //! It is not a borrow checker replacement, and it does not make borrows
 //! disappear. What it does is remove the three failure modes that make those
 //! shapes annoying in practice:
@@ -455,11 +462,18 @@ impl<T: Default> Default for Inline<T> {
 impl<T: PartialEq> PartialEq for Inline<T> {
     /// Compares the values under a shared borrow, panicking if one is borrowed.
     ///
-    /// An `Inline` is never shared, so unlike [`Local`] there is no
-    /// self-comparison short-circuit to make: `cell == cell` borrows twice, and
-    /// two shared borrows compose, so it still cannot panic on its own.
+    /// Two handles to the *same* cell compare equal without looking at the
+    /// value, so `cell == cell` never borrows and never panics. This is the
+    /// same short-circuit [`Local`] and [`Shared`] use, and the same one
+    /// [`Inner::try_eq`] carries, so `==` and `try_eq` always agree. It runs
+    /// for every `T: PartialEq`, which is the one place this differs from
+    /// `RefCell`: an irreflexive payload (`NaN`) compares equal to itself here
+    /// and unequal through `RefCell`.
     #[track_caller]
     fn eq(&self, other: &Self) -> bool {
+        if core::ptr::eq(self, other) {
+            return true;
+        }
         // Both guards are taken here, not inside nested `with` closures: a
         // closure's call site is inside this method, so a refusal would name a
         // line here instead of the caller's `==`. `borrow` is `#[track_caller]`
@@ -475,11 +489,14 @@ impl<T: Eq> Eq for Inline<T> {}
 impl<T: PartialOrd> PartialOrd for Inline<T> {
     /// Compares the values under a shared borrow, panicking if one is borrowed.
     ///
-    /// As with [`Inline`]'s `PartialEq`, there is no self-comparison
-    /// short-circuit to make (an `Inline` is never shared), and two shared
-    /// borrows compose, so `cell.partial_cmp(&cell)` cannot panic on its own.
+    /// As with [`Inline`]'s `PartialEq`, two handles to the same cell compare
+    /// `Some(Equal)` without borrowing, matching [`Local`], [`Shared`] and
+    /// [`Inner::try_cmp`].
     #[track_caller]
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        if core::ptr::eq(self, other) {
+            return Some(core::cmp::Ordering::Equal);
+        }
         let a = self.borrow();
         let b = other.borrow();
         a.partial_cmp(&b)
@@ -489,6 +506,9 @@ impl<T: PartialOrd> PartialOrd for Inline<T> {
 impl<T: Ord> Ord for Inline<T> {
     #[track_caller]
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        if core::ptr::eq(self, other) {
+            return core::cmp::Ordering::Equal;
+        }
         let a = self.borrow();
         let b = other.borrow();
         a.cmp(&b)

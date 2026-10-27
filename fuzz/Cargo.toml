@@ -23,3 +23,10 @@ path = "fuzz_targets/observers.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "snapshot"
+path = "fuzz_targets/snapshot.rs"
+test = false
+doc = false
+bench = false

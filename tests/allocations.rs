@@ -22,7 +22,7 @@
 use core::cell::Cell;
 use std::alloc::{GlobalAlloc, Layout, System};
 
-use borrow_lite::{Inline, Local, Observable, shared};
+use borrow_lite::{Inline, Local, Observable, Snapshot, shared};
 
 struct Counting;
 
@@ -242,5 +242,53 @@ fn a_cell_allocates_exactly_once() {
     assert_eq!(
         with_observers, again,
         "the next update allocated a different amount"
+    );
+
+    // `Snapshot<T>` is the read-mostly cell. Its read path is the claim that
+    // matters - a bare load must not touch the allocator - and its creation is
+    // two allocations, not one: the value is boxed (`Box::into_raw`) and the
+    // retired list is a `Vec` that starts with that one entry. Documenting the
+    // two here stops the "one allocation" claim for `Local`/`Shared` from being
+    // stretched to cover it.
+    let (snapshot, created) = allocs(|| Snapshot::new(0u64));
+    assert_eq!(
+        created, 2,
+        "Snapshot::new allocated {created} times, expected 2 (value box + retired list)"
+    );
+
+    // Reading is one atomic load and no bookkeeping at all, so it is free.
+    let (_, read) = allocs(|| *snapshot.load());
+    assert_eq!(read, 0, "Snapshot::load allocated");
+
+    // The first `store` may grow the retired `Vec` (that is the `Vec` growth
+    // strategy, not something this test pins); the *Box* for the new value is
+    // one allocation either way. Warming it once, then measuring, isolates the
+    // steady state - the same shape as the observer-list assertions above.
+    let (_, first_store) = allocs(|| snapshot.store(1));
+    assert!(
+        first_store <= 2,
+        "the first Snapshot::store allocated {first_store} times"
+    );
+    let (_, steady_store) = allocs(|| snapshot.store(2));
+    assert_eq!(
+        steady_store, 1,
+        "Snapshot::store in the steady state must allocate only the new value's box"
+    );
+
+    // `into_inner` consumes the cell and hands the current value back with no
+    // allocation of its own. The retired values are freed by the `Drop` that
+    // follows, so this frees *something* - but the exact count includes the
+    // retired list's own buffer, whose capacity depends on the `Vec` growth
+    // strategy (the same fragility the observer assertions above call out), so
+    // only the lower bound is asserted here. That every retired value is freed
+    // *exactly once* is pinned by `tests/snapshot.rs` with a drop counter, which
+    // is the assertion that can be exact.
+    let deallocs_before = count(&DEALLOCS);
+    let (value, taken) = allocs(|| snapshot.into_inner());
+    assert_eq!(value, 2, "into_inner returned the wrong value");
+    assert_eq!(taken, 0, "Snapshot::into_inner allocated");
+    assert!(
+        count(&DEALLOCS) - deallocs_before >= 2,
+        "into_inner's drop freed fewer blocks than the retired values it held"
     );
 }
