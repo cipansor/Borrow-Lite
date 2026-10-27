@@ -422,6 +422,34 @@ have to unwrap the cell to compare two of them or build one from a value.
 `Inline<T>` carries the same set bar `ptr_eq` (there is no handle to compare).
 The example is in [The shapes](#the-shapes).
 
+On top of that set, all three carry the traits that make a cell usable *as* the
+value in the places a value is expected: `Display`, `Hash`, the arithmetic
+assignment operators (`+=`, `-=`, `*=`, `/=`), and comparison against a bare `T`
+(`cell == 5`, `cell < 6`). Each is one borrow, released before the call returns,
+and each carries `#[track_caller]` so a conflict names the caller's line:
+
+```rust
+use borrow_lite::local;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+let mut counter = local(10i32);
+counter += 5;                 // one exclusive borrow
+counter *= 2;
+assert_eq!(counter, 30);      // PartialEq<T>
+assert_eq!(format!("{counter}"), "30"); // Display
+
+let mut hasher = DefaultHasher::new();
+counter.hash(&mut hasher);    // Hash, by value
+```
+
+`Hash` is the one place `borrow_lite` is deliberately *looser* than the
+`Rc<RefCell<T>>` it stands in for: `RefCell` has no `Hash`, so a
+`HashMap<RefCell<T>, _>` cannot be built. Here it can, because hashing borrows
+the value the same way `==` does. The caveat is the same as for any
+interior-mutable key: do not mutate a cell while it is a key in a map, or the map
+will not find it - the cell does not stop you, and neither does `RefCell`.
+
 `==` on two *different* cells borrows both values, so it panics if one is
 borrowed - exactly as `Rc<RefCell<T>>` does. Comparing a cell with *itself*
 short-circuits on the pointer and never borrows, so `cell == cell` never panics.
@@ -462,8 +490,18 @@ assert!(a.try_cmp(&b).is_err()); // would panic, reported instead
 # drop(held);
 ```
 
-There is deliberately no `Hash`: as with `RefCell`, interior mutability would let
-the value change while it is a key in a map.
+One honest limit on `Display`: the *refused* location names the crate's `Display`
+impl, not your caller, because `format!` reaches `Display::fmt` through
+`core::fmt`'s own non-`track_caller` dispatch. The *holder* is still named at the
+caller's line, which is the half that tells you what to fix. The other traits
+(`Hash`, `PartialEq<T>`, the operators) are called directly and do blame the
+caller.
+
+`map_get` is the closure form of a field read, named: `cell.map_get(|v|
+v.field.clone())` is what `map` is almost always used for, and it says so in one
+method. It is the same shared borrow as `map`, released before it returns.
+`get`/`set` remain the closure-free forms for a `Copy` value or a whole-value
+read and store.
 
 ## The cheapest cell: `Inline<T>`
 
@@ -644,6 +682,69 @@ plain borrow costs (measured: 3.92 ns, the same as `borrow`, against 4.23 ns for
 the `with` closure it replaces) and reports the same conflicts. The limit is the
 one that comes with a single cell: two reads compose, but a read and a write
 cannot overlap, exactly as `RefCell<Struct>` would behave.
+
+## `#[derive(Cell)]`: the field accessors without the macro
+
+`cell!` needs two names and an explicit field list. The optional `derive`
+feature generates the same handle from the value struct, so the list is the
+struct's own fields:
+
+```rust
+# #[cfg(feature = "derive")]
+# {
+use borrow_lite::Cell;
+
+#[derive(Cell)]
+struct Stats {
+    count: usize,
+    name: String,
+}
+
+let stats = StatsCell::new(0, String::from("hi"));
+*stats.count_mut() += 1;
+stats.name_mut().push('!');
+assert_eq!((*stats.count(), stats.name().as_str()), (1, "hi!"));
+# }
+```
+
+It generates `StatsCell` beside `Stats` (the value struct stays the value), with
+the same `field()`/`field_mut()` surface and the same cost. Off by default: it
+pulls in a proc-macro crate, and the default build is dependency-free.
+
+The handle is exactly what `cell!` produces, so the same three rules apply:
+
+- its `Clone` clones the *cell*, not the value, so the value does not need to be
+  `Clone` - and the generated impl carries no bound that would demand it;
+- it `Deref`s to the cell, so the whole-cell API (`with`, `borrow`, `try_with`,
+  the operators) is reachable;
+- it inherits the visibility of the value struct, so a private struct gets a
+  private handle rather than one that leaks the value through `Deref::Target`.
+
+## `unsafe-unchecked`: no check, no flag
+
+The checked cells are the point of the crate, but there is one case where the
+check is provably unnecessary: a cell built with `&mut` access, used before it is
+shared. The `unsafe-unchecked` feature adds `Unchecked<T>`, a cell the size of
+`UnsafeCell<T>` with no flag, no count and no holder:
+
+```rust
+# #[cfg(feature = "unsafe-unchecked")]
+# {
+use borrow_lite::Unchecked;
+
+let cell = Unchecked::new(5i32);
+// SAFETY: `cell` is not borrowed, and nothing else can reach it.
+unsafe { *cell.borrow_mut_unchecked() += 1; }
+// SAFETY: the write above has ended, so no other borrow is alive.
+assert_eq!(unsafe { *cell.borrow_unchecked() }, 6);
+# }
+```
+
+`borrow_unchecked`/`borrow_mut_unchecked` are `unsafe` because nothing enforces
+the aliasing rule for you - that is exactly what was traded away. `get_mut` is
+the safe path when you have `&mut`: it needs no `unsafe` and no flag, the same
+contract as `UnsafeCell::get_mut`. `Unchecked<T>` is `Send` when `T` is and,
+like `UnsafeCell`, never `Sync`.
 
 ## What it does not do
 
@@ -1221,6 +1322,8 @@ cargo test --features std --all-targets   # the `retry`/`wait` helper
 cargo test --features std --doc
 cargo clippy --all-targets -- -D warnings
 cargo clippy --features std --all-targets -- -D warnings
+cargo clippy --workspace --all-features --all-targets -- -D warnings
+cargo test --workspace --all-features --all-targets  # every feature at once
 cargo fmt --check
 cargo bench                       # all five suites
 cargo bench --bench compare       # the two cells, next to the `std` types

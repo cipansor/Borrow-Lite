@@ -38,6 +38,15 @@ jobs:
       - run: cargo clippy --no-default-features --all-targets -- -D warnings
       - run: cargo test --no-default-features --all-targets
       - run: cargo test --no-default-features --doc
+      # The remaining opt-in features (`derive`, `paste`, `unsafe-unchecked`)
+      # are additive and off by default, so a single `--all-features` pass
+      # compiles the whole surface together. `derive` matters most here: it is
+      # the only feature that pulls in a proc-macro dependency, so it is also
+      # the one whose generated code can drift from the declarative `cell!`.
+      # `--workspace` brings `borrow_lite_derive` into the lint/test pass too.
+      - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+      - run: cargo test --workspace --all-features --all-targets
+      - run: cargo test --workspace --all-features --doc
       # Broken intra-doc links are invisible otherwise, which is how three of
       # them survived until the docs were checked by hand.
       - run: cargo doc --no-deps
@@ -145,13 +154,18 @@ jobs:
   # `Cargo.toml` cargo rewrites. It catches a missing manifest field, a stray
   # path dependency, or a file that only exists on the author's disk - none of
   # which `cargo build` notices.
+  #
+  # `--workspace` packages both crates, which is what lets the unpublished
+  # `borrow_lite_derive` sibling resolve from its path for `borrow_lite`'s
+  # `derive` feature. Packaging `borrow_lite` alone fails, because cargo looks
+  # for the sibling on crates.io and it is not there yet.
   package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - run: cargo package
+      - run: cargo package --workspace
 
   # Render the docs the way docs.rs will: nightly, every feature on, and
   # `--cfg docsrs`. Without this, a `doc_cfg` attribute that only compiles

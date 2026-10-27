@@ -187,15 +187,29 @@ mod macros;
 mod observ;
 mod snapshot;
 mod sync;
+#[cfg(feature = "unsafe-unchecked")]
+mod unchecked;
 
 pub use crate::error::{Conflict, ConflictKind};
 pub use crate::guards::{ReadGuard, WriteGuard};
 pub use crate::inner::Inner;
 pub use crate::observ::{MAX_NOTIFICATION_ROUNDS, Observable, ObserverId};
 pub use crate::snapshot::Snapshot;
+#[cfg(feature = "unsafe-unchecked")]
+#[cfg_attr(docsrs, doc(cfg(feature = "unsafe-unchecked")))]
+pub use crate::unchecked::{Unchecked, unchecked};
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use crate::wait::{retry, wait};
+
+/// The optional `#[derive(Cell)]`.
+///
+/// Re-exported from `borrow_lite_derive` so the derive is available as
+/// `use borrow_lite::Cell;` rather than by depending on the macro crate
+/// directly. Only present with the `derive` feature.
+#[cfg(feature = "derive")]
+#[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
+pub use borrow_lite_derive::Cell;
 
 /// Names the [`cell!`](crate::cell) expansion refers to, re-exported so that the
 /// macro resolves them through `$crate` no matter where it is invoked.
@@ -931,6 +945,256 @@ impl<T: ?Sized + core::fmt::Debug + Sync> core::fmt::Debug for Shared<T> {
             Ok(value) => f.debug_tuple("Shared").field(&&*value).finish(),
             Err(conflict) => f.debug_tuple("Shared").field(&conflict).finish(),
         }
+    }
+}
+
+/// `cell *= factor` on an [`Inline`], one exclusive borrow.
+///
+/// The operator form of [`Inner::update`]. See [`AddAssign`](core::ops::AddAssign)
+/// for the panic contract.
+impl<T> core::ops::MulAssign<T> for Inline<T>
+where
+    T: Sized + core::ops::MulAssign<T>,
+{
+    #[track_caller]
+    fn mul_assign(&mut self, factor: T) {
+        self.0.update(|value| *value *= factor);
+    }
+}
+
+/// `cell /= divisor` on an [`Inline`], one exclusive borrow.
+impl<T> core::ops::DivAssign<T> for Inline<T>
+where
+    T: Sized + core::ops::DivAssign<T>,
+{
+    #[track_caller]
+    fn div_assign(&mut self, divisor: T) {
+        self.0.update(|value| *value /= divisor);
+    }
+}
+
+/// `cell *= factor` on a [`Local`], one exclusive borrow.
+impl<T> core::ops::MulAssign<T> for Local<T>
+where
+    T: Sized + core::ops::MulAssign<T>,
+{
+    #[track_caller]
+    fn mul_assign(&mut self, factor: T) {
+        self.0.update(|value| *value *= factor);
+    }
+}
+
+/// `cell /= divisor` on a [`Local`], one exclusive borrow.
+impl<T> core::ops::DivAssign<T> for Local<T>
+where
+    T: Sized + core::ops::DivAssign<T>,
+{
+    #[track_caller]
+    fn div_assign(&mut self, divisor: T) {
+        self.0.update(|value| *value /= divisor);
+    }
+}
+
+/// `cell *= factor` on a [`Shared`], one exclusive borrow.
+impl<T> core::ops::MulAssign<T> for Shared<T>
+where
+    T: Sized + core::ops::MulAssign<T>,
+{
+    #[track_caller]
+    fn mul_assign(&mut self, factor: T) {
+        self.0.update(|value| *value *= factor);
+    }
+}
+
+/// `cell /= divisor` on a [`Shared`], one exclusive borrow.
+impl<T> core::ops::DivAssign<T> for Shared<T>
+where
+    T: Sized + core::ops::DivAssign<T>,
+{
+    #[track_caller]
+    fn div_assign(&mut self, divisor: T) {
+        self.0.update(|value| *value /= divisor);
+    }
+}
+
+/// `format!("{cell}")` on an [`Inline`], one shared borrow.
+///
+/// The formatting counterpart of [`Debug`]: the value is formatted under a
+/// shared borrow, so a conflict panics with a located message rather than
+/// printing anything. The `Display` impl on [`ReadGuard`] is
+/// what makes this one line.
+///
+/// One honest limit: the *refused* location names this impl, not the caller,
+/// because `format!` reaches `Display::fmt` through `core::fmt`'s own
+/// non-`track_caller` dispatch. The *holder* is still named at the caller's
+/// line, which is the half that tells you what to fix.
+impl<T: ?Sized + core::fmt::Display> core::fmt::Display for Inline<T> {
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is exclusively borrowed.
+    #[track_caller]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&*self.borrow(), f)
+    }
+}
+
+/// `format!("{cell}")` on a [`Local`], one shared borrow.
+impl<T: ?Sized + core::fmt::Display> core::fmt::Display for Local<T> {
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is exclusively borrowed.
+    #[track_caller]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&*self.borrow(), f)
+    }
+}
+
+/// `format!("{cell}")` on a [`Shared`], one shared borrow.
+///
+/// `Sync` is required because formatting from another thread is a cross-thread
+/// read of `T`; it is the same bound [`Debug`] uses.
+impl<T: ?Sized + core::fmt::Display + Sync> core::fmt::Display for Shared<T> {
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is exclusively borrowed.
+    #[track_caller]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&*self.borrow(), f)
+    }
+}
+
+/// Hash the value, under a shared borrow.
+///
+/// The same contract as `RefCell`'s `Hash`: the value is borrowed for the
+/// duration of the hash, so a conflict panics with a located message. Hashing a
+/// cell by value is what lets a `HashMap<Inline<T>, _>` be keyed on the value
+/// without unwrapping.
+///
+/// ```
+/// use borrow_lite::inline;
+/// use std::collections::hash_map::DefaultHasher;
+/// use std::hash::{Hash, Hasher};
+///
+/// let mut hasher = DefaultHasher::new();
+/// inline(7u8).hash(&mut hasher);
+/// let from_cell = hasher.finish();
+///
+/// let mut hasher = DefaultHasher::new();
+/// 7u8.hash(&mut hasher);
+/// assert_eq!(from_cell, hasher.finish());
+/// ```
+impl<T: ?Sized + core::hash::Hash> core::hash::Hash for Inline<T> {
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is exclusively borrowed.
+    #[track_caller]
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::hash::Hash::hash(&*self.borrow(), state);
+    }
+}
+
+/// Hash the value, under a shared borrow. See [`Inline`]'s `Hash`.
+impl<T: ?Sized + core::hash::Hash> core::hash::Hash for Local<T> {
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is exclusively borrowed.
+    #[track_caller]
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::hash::Hash::hash(&*self.borrow(), state);
+    }
+}
+
+/// Hash the value, under a shared borrow. See [`Inline`]'s `Hash`. `Sync` is
+/// required for the same reason [`Debug`] requires it.
+impl<T: ?Sized + core::hash::Hash + Sync> core::hash::Hash for Shared<T> {
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is exclusively borrowed.
+    #[track_caller]
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::hash::Hash::hash(&*self.borrow(), state);
+    }
+}
+
+/// Compare an [`Inline`] with a bare `T`, one shared borrow of the cell.
+///
+/// `cell == 5` is `*cell.borrow() == 5` without the guard. The `T` side never
+/// borrows, so only the cell can conflict, and the self-comparison
+/// short-circuit of the [`Inline`]-vs-[`Inline`] impl does not apply here -
+/// this always borrows the cell.
+///
+/// ```
+/// use borrow_lite::inline;
+///
+/// let cell = inline(5i32);
+/// assert!(cell == 5);
+/// assert!(cell != 6);
+/// assert!(cell >= 5);
+/// ```
+impl<T: PartialEq> PartialEq<T> for Inline<T> {
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is exclusively borrowed.
+    #[track_caller]
+    fn eq(&self, other: &T) -> bool {
+        *self.borrow() == *other
+    }
+}
+
+/// Compare a [`Local`] with a bare `T`, one shared borrow of the cell.
+impl<T: PartialEq> PartialEq<T> for Local<T> {
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is exclusively borrowed.
+    #[track_caller]
+    fn eq(&self, other: &T) -> bool {
+        *self.borrow() == *other
+    }
+}
+
+/// Compare a [`Shared`] with a bare `T`, one shared borrow of the cell.
+impl<T: PartialEq + Sync> PartialEq<T> for Shared<T> {
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is exclusively borrowed.
+    #[track_caller]
+    fn eq(&self, other: &T) -> bool {
+        *self.borrow() == *other
+    }
+}
+
+/// Order an [`Inline`] against a bare `T`, one shared borrow of the cell.
+///
+/// The ordering counterpart of the [`Inline`]-vs-`T` `PartialEq`.
+impl<T: PartialOrd> PartialOrd<T> for Inline<T> {
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is exclusively borrowed.
+    #[track_caller]
+    fn partial_cmp(&self, other: &T) -> Option<core::cmp::Ordering> {
+        (*self.borrow()).partial_cmp(other)
+    }
+}
+
+/// Order a [`Local`] against a bare `T`, one shared borrow of the cell.
+impl<T: PartialOrd> PartialOrd<T> for Local<T> {
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is exclusively borrowed.
+    #[track_caller]
+    fn partial_cmp(&self, other: &T) -> Option<core::cmp::Ordering> {
+        (*self.borrow()).partial_cmp(other)
+    }
+}
+
+/// Order a [`Shared`] against a bare `T`, one shared borrow of the cell.
+impl<T: PartialOrd + Sync> PartialOrd<T> for Shared<T> {
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is exclusively borrowed.
+    #[track_caller]
+    fn partial_cmp(&self, other: &T) -> Option<core::cmp::Ordering> {
+        (*self.borrow()).partial_cmp(other)
     }
 }
 

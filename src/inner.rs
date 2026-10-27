@@ -692,6 +692,46 @@ impl<T: ?Sized> Inner<T, LocalState> {
         self.try_with(f)
     }
 
+    /// Project one field out of the value, cloning it, without a closure.
+    ///
+    /// The common case [`map`](Self::map) exists for, named: `cell.map_get(|v|
+    /// v.field.clone())` is what a caller writes to read a field out of a cell
+    /// without holding a guard, and this says so in one method. It is exactly
+    /// [`map`](Self::map) - the same shared borrow, released before this
+    /// returns, so it cannot leak - with the `.clone()` built in.
+    ///
+    /// ```
+    /// use borrow_lite::local;
+    ///
+    /// struct Stats { hits: u32, name: String }
+    /// let stats = local(Stats { hits: 3, name: String::from("x") });
+    /// assert_eq!(stats.map_get(|s| s.hits), 3);
+    /// assert_eq!(stats.map_get(|s| s.name.clone()), "x");
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is already borrowed. Use
+    /// [`try_map_get`](Self::try_map_get) for that case as a `Result`.
+    #[track_caller]
+    #[inline]
+    pub fn map_get<R: Clone>(&self, f: impl FnOnce(&T) -> R) -> R {
+        self.map(f)
+    }
+
+    /// Project one field out, or return the conflict to the caller.
+    ///
+    /// The non-panicking form of [`map_get`](Self::map_get).
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Conflict`] if the value cannot be borrowed.
+    #[track_caller]
+    #[inline]
+    pub fn try_map_get<R: Clone>(&self, f: impl FnOnce(&T) -> R) -> Result<R, Conflict> {
+        self.try_map(f)
+    }
+
     /// Copy the value out, without a closure.
     ///
     /// The read-shaped counterpart of [`set`](Self::set): `cell.get()` where
@@ -896,6 +936,46 @@ impl<T: ?Sized + Sync> Inner<T, AtomicState> {
     #[track_caller]
     pub fn try_map<R>(&self, f: impl FnOnce(&T) -> R) -> Result<R, Conflict> {
         self.try_with(f)
+    }
+
+    /// Project one field out of the value, cloning it, without a closure.
+    ///
+    /// The common case [`map`](Self::map) exists for, named: `cell.map_get(|v|
+    /// v.field.clone())` is what a caller writes to read a field out of a cell
+    /// without holding a guard, and this says so in one method. It is exactly
+    /// [`map`](Self::map) - the same shared borrow, released before this
+    /// returns, so it cannot leak - with the `.clone()` built in.
+    ///
+    /// ```
+    /// use borrow_lite::local;
+    ///
+    /// struct Stats { hits: u32, name: String }
+    /// let stats = local(Stats { hits: 3, name: String::from("x") });
+    /// assert_eq!(stats.map_get(|s| s.hits), 3);
+    /// assert_eq!(stats.map_get(|s| s.name.clone()), "x");
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics with a located message if the cell is already borrowed. Use
+    /// [`try_map_get`](Self::try_map_get) for that case as a `Result`.
+    #[track_caller]
+    #[inline]
+    pub fn map_get<R: Clone>(&self, f: impl FnOnce(&T) -> R) -> R {
+        self.map(f)
+    }
+
+    /// Project one field out, or return the conflict to the caller.
+    ///
+    /// The non-panicking form of [`map_get`](Self::map_get).
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Conflict`] if the value cannot be borrowed.
+    #[track_caller]
+    #[inline]
+    pub fn try_map_get<R: Clone>(&self, f: impl FnOnce(&T) -> R) -> Result<R, Conflict> {
+        self.try_map(f)
     }
 
     /// Copy the value out, without a closure.

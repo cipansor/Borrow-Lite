@@ -158,6 +158,18 @@ const _: () = {
     // The read-mostly cell is one pointer, the writer lock, and the retired
     // list. None of it depends on `diagnostics`.
     assert!(core::mem::size_of::<Snapshot<u64>>() == 40);
+
+    // The unchecked mode is the *point* of its feature: no flags, so exactly
+    // the size of the raw `UnsafeCell` it wraps. If this ever grows, the mode
+    // has bought nothing.
+    #[cfg(feature = "unsafe-unchecked")]
+    {
+        assert!(
+            core::mem::size_of::<borrow_lite::Unchecked<u64>>()
+                == core::mem::size_of::<std::cell::UnsafeCell<u64>>()
+        );
+        assert!(core::mem::size_of::<borrow_lite::Unchecked<u64>>() == 8);
+    }
 };
 
 /// The regression for the bug this file found: a panicking observer used to

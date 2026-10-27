@@ -1,0 +1,23 @@
+[package]
+name = "borrow_lite_derive"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "The optional `#[derive(Cell)]` for borrow_lite: one struct instead of the two-name `cell!`."
+authors = ["Yayasan Pesantren Cipansor and contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/cipansor/Borrow-Lite"
+documentation = "https://docs.rs/borrow_lite_derive"
+keywords = ["refcell", "interior-mutability", "derive", "macros"]
+categories = ["rust-patterns", "memory-management"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0.86"
+quote = "1.0.37"
+syn = { version = "2.0.79", features = ["full"] }
+
+[lints.rust]
+missing_docs = "warn"
