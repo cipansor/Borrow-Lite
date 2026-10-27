@@ -746,6 +746,14 @@ the safe path when you have `&mut`: it needs no `unsafe` and no flag, the same
 contract as `UnsafeCell::get_mut`. `Unchecked<T>` is `Send` when `T` is and,
 like `UnsafeCell`, never `Sync`.
 
+Because a caller can hold a live `&mut T` from `borrow_mut_unchecked`, nothing
+safe may read the value through `&self`. `Debug` therefore prints a placeholder
+(`Unchecked { .. }`), exactly as `UnsafeCell`'s own `Debug` prints
+`UnsafeCell { .. }` rather than the value. A value-reading `Debug` would retag a
+shared reference over the live `&mut T` and be undefined behaviour the caller
+cannot avoid - `-Zmiri-strict-provenance` rejects it, and a regression test in
+`tests/unchecked.rs` pins the placeholder.
+
 ## What it does not do
 
 - It does not check borrows at compile time. If you want static guarantees, the

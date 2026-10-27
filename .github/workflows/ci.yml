@@ -115,6 +115,12 @@ jobs:
       - run: cargo miri test --features std
         env:
           MIRIFLAGS: -Zmiri-disable-isolation
+      # `unsafe-unchecked` is exactly the feature Miri is for: it is the one
+      # place in the crate with no flag to catch a mistake. This is what caught
+      # the value-reading `Debug` retagging a live `&mut T`.
+      - run: cargo miri test --features unsafe-unchecked
+        env:
+          MIRIFLAGS: -Zmiri-strict-provenance
 
   # Loom explores interleavings exhaustively. Its limit is documented in
   # tests/loom.rs: it treats SeqCst as AcqRel, so the SeqCst total-order

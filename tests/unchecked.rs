@@ -57,10 +57,34 @@ fn construction_and_teardown() {
     assert_eq!(cell.into_inner(), 5);
 }
 
-/// `Debug` prints the value.
+/// `Debug` does *not* read the value - it prints a placeholder, like
+/// `UnsafeCell`'s own `Debug`. Reading it through `&self` would retag a shared
+/// reference over a live `&mut T` from `borrow_mut_unchecked` and be UB.
 #[test]
-fn debug_prints_the_value() {
-    assert_eq!(format!("{:?}", unchecked(7u8)), "Unchecked(7)");
+fn debug_does_not_read_the_value() {
+    assert_eq!(format!("{:?}", unchecked(7u8)), "Unchecked { .. }");
+    // Same *shape* as `UnsafeCell`'s placeholder - `Name { .. }`, no value -
+    // not the same name.
+    let std_shape = format!("{:?}", std::cell::UnsafeCell::new(7u8));
+    assert!(std_shape.ends_with("{ .. }"), "{std_shape}");
+    assert!(!format!("{:?}", unchecked(7u8)).contains('7'));
+}
+
+/// Regression for the `Debug`-aliases-`&mut` UB: formatting while a live
+/// `borrow_mut_unchecked` reference exists must not invalidate it. The old
+/// `Debug` read `*self.0.get()` and Miri
+/// (`-Zmiri-strict-provenance`) rejected the later use of `r`; the placeholder
+/// `Debug` leaves the exclusive reference untouched.
+#[test]
+fn debug_does_not_invalidate_a_live_mutable_borrow() {
+    let cell = unchecked(0u8);
+    // SAFETY: no other reference to the value is alive at this point.
+    let r = unsafe { cell.borrow_mut_unchecked() };
+    let rendered = format!("{cell:?}");
+    assert_eq!(rendered, "Unchecked { .. }");
+    // The exclusive reference is still the only one, so this is sound.
+    *r = 2;
+    assert_eq!(*r, 2);
 }
 
 /// A refused borrow is not possible here - there is no check - so the mode is

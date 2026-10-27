@@ -100,15 +100,19 @@ impl<T: ?Sized> Unchecked<T> {
     }
 }
 
-impl<T: ?Sized + core::fmt::Debug> core::fmt::Debug for Unchecked<T> {
-    /// Format the value through a unique borrow, so it never conflicts.
+impl<T: ?Sized> core::fmt::Debug for Unchecked<T> {
+    /// Format the cell *without* reading the value.
+    ///
+    /// Reading the value here would be unsound: a caller may hold a live
+    /// `&mut T` from [`borrow_mut_unchecked`](Unchecked::borrow_mut_unchecked),
+    /// and formatting through `&self` would retag a shared reference over it,
+    /// invalidating that `&mut T` - undefined behaviour the caller cannot
+    /// avoid, because `Debug` is safe. `&UnsafeCell<T>` cannot be safely read
+    /// either, so [`UnsafeCell`]'s own `Debug` prints a placeholder too
+    /// (`UnsafeCell { .. }`); this matches it, and `-Zmiri-strict-provenance`
+    /// catches the reading version.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // SAFETY: `get_mut` needs `&mut self`; here `&self` is only used to
-        // reach the value for formatting, and the cell is not `Sync`, so no
-        // other thread can be reading it. This mirrors `UnsafeCell`'s own
-        // `Debug`-by-reference usage in a single-threaded context.
-        let value = unsafe { &*self.0.get() };
-        f.debug_tuple("Unchecked").field(&value).finish()
+        f.debug_struct("Unchecked").finish_non_exhaustive()
     }
 }
 
