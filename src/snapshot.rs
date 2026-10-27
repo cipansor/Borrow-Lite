@@ -256,14 +256,18 @@ impl<T> Snapshot<T> {
     #[must_use]
     pub fn into_inner(self) -> T {
         // The current value is always the last pointer pushed, and `Drop` frees
-        // the rest, so take the last one out and hand ownership back.
+        // the rest, so take the last one out and hand ownership back. Removing
+        // by position rather than by pointer value matters for a zero-sized
+        // `T`: every `Box::into_raw` then yields the same dangling pointer, so a
+        // `retain(|&p| p != raw)` would remove *all* entries and leak the
+        // destructors of the retired ones.
         let raw = self.current.load(Ordering::Acquire);
         // SAFETY: `raw` came from `Box::into_raw` and is dropped exactly once,
         // here; `Drop` skips it because it was removed from `retired`.
         let value = unsafe { *Box::from_raw(raw) };
         // SAFETY: `into_inner` has `self` by value, so nothing else can touch
-        // `retired` now.
-        unsafe { (*self.retired.get()).retain(|&p| p != raw) };
+        // `retired` now. The last entry is the current value, so it exists.
+        unsafe { (*self.retired.get()).pop() };
         value
     }
 }

@@ -78,6 +78,31 @@ fn into_inner_drops_the_retired_values() {
 }
 
 #[test]
+fn into_inner_drops_a_retired_zero_sized_value() {
+    // A zero-sized `T` makes every `Box::into_raw` yield the *same* dangling
+    // pointer, so removing the current value by pointer equality would remove
+    // every entry and leak the destructors of the retired ones. The current
+    // value is always the last entry `store` pushed, so removal is by position.
+    struct Zst;
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+    impl Drop for Zst {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    DROPS.store(0, Ordering::SeqCst);
+    let cell = Snapshot::new(Zst);
+    cell.store(Zst);
+    cell.store(Zst);
+    assert_eq!(DROPS.load(Ordering::SeqCst), 0);
+    let current = cell.into_inner();
+    drop(current);
+    // All three values must be destroyed: the one handed back, and both retired.
+    assert_eq!(DROPS.load(Ordering::SeqCst), 3);
+}
+
+#[test]
 fn with_scopes_the_borrow_like_the_other_cells() {
     let cell = Snapshot::new(vec![1, 2, 3]);
     assert_eq!(cell.with(Vec::len), 3);
