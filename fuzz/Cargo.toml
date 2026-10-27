@@ -1,0 +1,32 @@
+[package]
+name = "borrow_lite-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.borrow_lite]
+path = ".."
+
+[[bin]]
+name = "borrow_ops"
+path = "fuzz_targets/borrow_ops.rs"
+
+[[bin]]
+name = "observers"
+path = "fuzz_targets/observers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snapshot"
+path = "fuzz_targets/snapshot.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,131 @@
+[package]
+name = "borrow_lite"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Rc<RefCell<T>> and Arc<RwLock<T>> ergonomics without the pain: one small API, try-first borrowing, and conflicts that tell you who borrowed what and where."
+authors = ["Yayasan Pesantren Cipansor and contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/cipansor/Borrow-Lite"
+documentation = "https://docs.rs/borrow_lite"
+keywords = ["refcell", "rwlock", "interior-mutability", "ergonomics", "rc"]
+categories = ["rust-patterns", "memory-management", "no-std"]
+readme = "README.md"
+
+# The `derive` feature depends on `borrow_lite_derive`, a proc-macro crate that
+# lives in `derive/` and is released with this one. Declaring the workspace here
+# (rather than leaving the two crates unrelated) is what lets `cargo package
+# --workspace` resolve the sibling from its path when it is not yet on
+# crates.io; without it `cargo package` on this crate alone fails with "no
+# matching package named borrow_lite_derive found".
+#
+# `fuzz` is excluded on purpose: it is a `cargo-fuzz` crate that owns its own
+# lockfile and is built only by the fuzzing job, so it must stay out of the
+# workspace or `cargo test` at the root would try to build the fuzz targets.
+[workspace]
+members = ["derive"]
+exclude = ["fuzz"]
+
+# docs.rs builds every feature, but `--cfg docsrs` alone does not turn a feature
+# on - it only enables the `doc_cfg` attributes. Without `all-features` the
+# `std`-gated `retry`/`wait` helpers would be missing from the rendered docs.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["diagnostics"]
+# Records the source location of every borrow, so a refused borrow can name the
+# borrow that is in the way and the borrow that was refused. This is what makes
+# `Conflict::holder`/`wanted` carry a location and what the panicking messages
+# print; turning it off drops `holder` from the single-threaded state entirely,
+# so `Inline<u64>` is the same size as `RefCell<u64>` (16 bytes) and a borrow
+# costs what `RefCell`'s costs. `#[track_caller]` remains on the methods either
+# way - it is a no-op with no consumer, and keeping it on means the source
+# compiles unchanged.
+diagnostics = []
+# Turns on `#[derive(Cell)]` (re-exported from `borrow_lite_derive`), the
+# one-name alternative to `cell!`. Off by default because it is the only
+# feature that pulls in a proc-macro dependency; the declarative macro needs
+# nothing.
+derive = ["dep:borrow_lite_derive"]
+# Lets `cell!` derive a setter name from the field name (`count` -> `count_mut`)
+# instead of requiring it to be spelled out. It pulls in `paste`, so it is off
+# by default; the explicit `field => field_mut` form needs nothing.
+paste = ["dep:paste"]
+# Adds `borrow_lite::wait`, an adaptive retry helper that yields. The crate is
+# `no_std` by default, and `thread::yield_now` needs `std`, so the helper is
+# behind this feature. It exists because the benchmarks found that yielding
+# beats both spinning and `parking_lot::RwLock` under contention, yet the
+# obvious loop to write is the spinning one.
+std = []
+# Adds `unsafe fn borrow_unchecked` / `borrow_mut_unchecked` (and their
+# `try_`-free guard forms) that skip the borrow flags entirely, for a caller
+# that has proven no other borrow can exist. Off by default because it is the
+# one feature that lets safe-looking code reach `&mut T` without a check; the
+# methods are `unsafe` and each documents its obligation.
+unsafe-unchecked = []
+
+[dependencies]
+# Only used by the `paste` feature, to build an identifier like `count_mut` from
+# `count` inside `macro_rules!`. Optional, so the default build pulls in nothing.
+paste = { version = "1.0", optional = true }
+# The `#[derive(Cell)]` implementation, behind the `derive` feature. A separate
+# proc-macro crate because a proc-macro cannot live in the same package as the
+# library it generates code for.
+borrow_lite_derive = { version = "0.1.0", path = "derive", optional = true }
+
+# Loom is only pulled in when `RUSTFLAGS=--cfg loom` is set, which only the
+# model-checking test job does. The library itself swaps its atomics for loom's
+# instrumented ones under that cfg, so this has to be a real dependency rather
+# than a dev-dependency - a dev-dependency would not be visible to the library.
+# A normal build never matches the target cfg, so nothing is downloaded.
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+[dev-dependencies]
+# Only used by `benches/readonly.rs`, as the read-mostly yardstick for
+# `Snapshot`. Nothing in the library or its tests depends on it.
+arc-swap = "1.9.3"
+# Only the benchmarking harness is needed, so the default `rayon`/`plotters`
+# features are off. `cargo test --all-targets` runs these in test mode, which
+# makes them a smoke test for the crate as well.
+criterion = { version = "0.5.1", default-features = false, features = [
+    "cargo_bench_support",
+] }
+parking_lot = "0.12.5"
+
+[[bench]]
+name = "compare"
+harness = false
+
+[[bench]]
+name = "ergonomic_paths"
+harness = false
+
+[[bench]]
+name = "contention"
+harness = false
+
+[[bench]]
+name = "retry"
+harness = false
+
+[[bench]]
+name = "readonly"
+harness = false
+
+[[bench]]
+name = "observable"
+harness = false
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+# `loom` is a cfg name this crate uses but cargo does not know about, so it has
+# to be declared or every `#[cfg(loom)]` trips `unexpected_cfgs` under
+# `-D warnings`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
