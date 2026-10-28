@@ -1,0 +1,128 @@
+name: Release
+
+# Publishing is driven by tags: push `vX.Y.Z` and this publishes the two crates
+# in the right order, then opens the GitHub release. Nothing runs on branch
+# pushes - CI covers those.
+on:
+  push:
+    tags: ["v*"]
+
+# `contents: write` is for creating the GitHub release; `id-token` would be
+# needed for crates.io trusted publishing, which this uses a token instead of.
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # A tag is a promise that the code works, so gate the publish on the same
+  # checks CI runs. `--all-features` covers the opt-in features, and the
+  # workspace pass brings `borrow_lite_derive` in too.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+      - run: cargo test --workspace --all-features --all-targets
+      - run: cargo test --workspace --all-features --doc
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # Catches a manifest or file-set problem (a missing README, a stray
+      # file) before the upload, which cannot be undone.
+      - run: cargo package --workspace
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      # Refuse to publish a tag that disagrees with the manifests, so the tag
+      # and the crates.io version can never drift apart.
+      - name: Check the tag matches the crate versions
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          meta=$(cargo metadata --no-deps --format-version 1)
+          main=$(jq -r '.packages[] | select(.name == "borrow_lite") | .version' <<<"$meta")
+          derive=$(jq -r '.packages[] | select(.name == "borrow_lite_derive") | .version' <<<"$meta")
+          echo "tag=$tag borrow_lite=$main borrow_lite_derive=$derive"
+          if [ "$tag" != "$main" ]; then
+            echo "::error::tag v$tag does not match borrow_lite $main"; exit 1
+          fi
+          if [ "$tag" != "$derive" ]; then
+            echo "::error::tag v$tag does not match borrow_lite_derive $derive"; exit 1
+          fi
+
+      # `borrow_lite` depends on `borrow_lite_derive` by version, so the derive
+      # crate has to go first - a publish of the main crate alone fails with
+      # "no matching package named `borrow_lite_derive` found".
+      - name: Publish borrow_lite_derive
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "borrow_lite_derive") | .version')
+          if curl -sSf -A "borrow-lite-release (github actions)" \
+              "https://crates.io/api/v1/crates/borrow_lite_derive/$version" >/dev/null 2>&1; then
+            echo "borrow_lite_derive $version is already on crates.io; skipping"
+          else
+            cargo publish -p borrow_lite_derive
+          fi
+
+      # The index does not update instantly, and `cargo publish` resolves the
+      # sibling through it. Wait for the version to appear rather than racing it.
+      - name: Wait for borrow_lite_derive to reach the index
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "borrow_lite_derive") | .version')
+          for attempt in $(seq 1 60); do
+            if curl -sSf -A "borrow-lite-release (github actions)" \
+                "https://crates.io/api/v1/crates/borrow_lite_derive/$version" >/dev/null 2>&1; then
+              echo "borrow_lite_derive $version is in the index"
+              exit 0
+            fi
+            echo "waiting for borrow_lite_derive $version (attempt $attempt)"
+            sleep 10
+          done
+          echo "::error::timed out waiting for borrow_lite_derive $version"
+          exit 1
+
+      - name: Publish borrow_lite
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "borrow_lite") | .version')
+          if curl -sSf -A "borrow-lite-release (github actions)" \
+              "https://crates.io/api/v1/crates/borrow_lite/$version" >/dev/null 2>&1; then
+            echo "borrow_lite $version is already on crates.io; skipping"
+          else
+            cargo publish
+          fi
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists; leaving it alone"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --generate-notes
+          fi
