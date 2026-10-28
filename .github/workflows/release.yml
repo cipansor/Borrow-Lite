@@ -195,6 +195,13 @@ jobs:
 
       # Idempotent, so a re-run after a partial release updates the notes instead
       # of failing because the release already exists.
+      #
+      # `--verify-tag` is deliberately not used. `gh release create --verify-tag`
+      # only accepts a tag that already exists on the remote, so a manual
+      # `workflow_dispatch` for a tag that has not been pushed yet fails with
+      # `aborting due to --verify-tag flag` - after the publish already happened.
+      # A tag push is the normal path and the tag is present there; on the
+      # dispatch path `gh` creates the tag at the checked-out commit instead.
       - name: Create or update the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -204,6 +211,5 @@ jobs:
           else
             gh release create "$RELEASE_TAG" \
               --title "$RELEASE_TAG" \
-              --notes-file notes.md \
-              --verify-tag
+              --notes-file notes.md
           fi
