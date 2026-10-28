@@ -149,13 +149,64 @@
 //! * It does not check borrows at compile time. For that, look at `qcell` or
 //!   `ghost-cell`, which trade flexibility for static guarantees.
 //! * It does not remove the need for `unsafe`; the crate has a small amount of
-//!   it, confined to two modules, and the rest is safe code on top.
+//!   it, confined to the borrow bookkeeping and the types built on it
+//!   (`state`, `guards`, `inner`, `snapshot`, and `unchecked` under its
+//!   feature), and the rest is safe code on top.
 //! * It is not a lock. Borrows are not blocking, so a busy cell reports a
 //!   conflict instead of waiting. If you want waiting, use a real lock. When
 //!   you do retry, retry with `std::thread::yield_now()` rather than a spin
 //!   loop: measured under contention, yielding beats both spinning and
 //!   `RwLock`, while spinning is the slowest option because it burns the core
 //!   it needs. See the benchmarks in the repository.
+//!
+//! ## Installation
+//!
+//! ```toml
+//! [dependencies]
+//! borrow_lite = "0.1"
+//! ```
+//!
+//! The default build is `no_std` plus `alloc`, has no dependencies, and turns on
+//! `diagnostics`.
+//!
+//! ## Cargo features
+//!
+//! Everything except `diagnostics` is opt-in, so the default build pulls in
+//! nothing.
+//!
+//! | Feature | Default | What it adds |
+//! |---|---|---|
+//! | `diagnostics` | yes | Records where every borrow happened, so [`Conflict`] and the panicking messages can name the borrow that is in the way and the borrow that was refused. Turning it off drops the holder from the single-threaded cell, so `Inline<u64>` is the same size as `RefCell<u64>` (16 bytes) and a borrow costs what `RefCell`'s does. |
+//! | `std` | no | `wait` and `retry`: the single step to take between attempts, and a bounded retry loop built on it. `std::thread::yield_now` needs `std`, which is why they are gated. |
+//! | `derive` | no | `#[derive(Cell)]`, the one-name alternative to the [`cell!`] macro. Pulls in a proc-macro crate. |
+//! | `paste` | no | Lets [`cell!`] derive a setter name from the field name (`count` -> `count_mut`) instead of spelling it out. Pulls in `paste`. |
+//! | `unsafe-unchecked` | no | `Unchecked`, a cell with no borrow flags at all, for a caller that has proven no other borrow can exist. |
+//!
+//! ## `no_std`
+//!
+//! The crate is `no_std` plus `alloc` unless the `std` feature is on, and its
+//! normal build has no dependencies. The `no_std` build is a CI job against a
+//! bare-metal target (`thumbv7em-none-eabi`), so the claim is checked rather
+//! than asserted.
+//!
+//! ## Minimum supported Rust version
+//!
+//! Rust 1.85, the first release with edition 2024, which the crate uses. The
+//! MSRV is a CI job, so it cannot drift unnoticed, and raising it is treated as
+//! a breaking change.
+//!
+//! ## Where the rest of the documentation lives
+//!
+//! This page covers the API. The [README] carries the longer guide: the design
+//! rationale, the comparison against `RefCell`, `RwLock` and `parking_lot`, and
+//! the measured benchmark numbers, including the ones behind the retry advice
+//! above.
+//!
+//! [README]: https://github.com/cipansor/Borrow-Lite/blob/main/README.md
+//!
+//! ## License
+//!
+//! Licensed under the Apache License, Version 2.0.
 
 #![cfg_attr(not(any(loom, feature = "std")), no_std)]
 // `docsrs` is set by docs.rs (via the manifest metadata below) and by the CI

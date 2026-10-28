@@ -5,9 +5,10 @@
 `borrow_lite` is a `no_std` library of interior-mutability cells. It does no I/O,
 opens no network connection, reads no environment variable, and has no
 dependencies in its default build. Its whole attack surface is *memory safety*:
-the crate contains `unsafe` code (confined to `src/inner.rs`, `src/guards.rs`,
-`src/state.rs` and `src/snapshot.rs`), and a mistake there is the only way this
-library can hurt a program that uses it correctly.
+the crate contains `unsafe` code (confined to `src/state.rs`, `src/guards.rs`,
+`src/inner.rs`, `src/snapshot.rs`, and - under the `unsafe-unchecked` feature -
+`src/unchecked.rs`), and a mistake there is the only way this library can hurt a
+program that uses it correctly.
 
 That means the vulnerabilities that matter here are soundness bugs:
 

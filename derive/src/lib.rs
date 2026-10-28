@@ -21,7 +21,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, DeriveInput, Fields, LitStr};
+use syn::{DeriveInput, Fields, LitStr, parse_macro_input};
 
 /// Derive a `borrow_lite` cell handle for a struct of named fields.
 ///

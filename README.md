@@ -1,5 +1,10 @@
 # borrow_lite
 
+[![crates.io](https://img.shields.io/crates/v/borrow_lite.svg)](https://crates.io/crates/borrow_lite)
+[![docs.rs](https://docs.rs/borrow_lite/badge.svg)](https://docs.rs/borrow_lite)
+[![CI](https://github.com/cipansor/Borrow-Lite/actions/workflows/ci.yml/badge.svg)](https://github.com/cipansor/Borrow-Lite/actions/workflows/ci.yml)
+[![license](https://img.shields.io/crates/l/borrow_lite.svg)](#license)
+
 Shared, mutable data in Rust without the parts that usually bite you.
 
 `borrow_lite` is a small experiment in ergonomics, not a new borrow checker. It
@@ -14,6 +19,7 @@ easy it is to write code that never hits it.
 
 ## Contents
 
+- **[Installation](#installation)**
 - **[Getting started](#getting-started)**
   - [The shapes](#the-shapes)
   - [Old way vs `borrow_lite`](#old-way-vs-borrow_lite)
@@ -40,6 +46,29 @@ easy it is to write code that never hits it.
   - [Testing](#testing)
 - **[License](#license)**
   - [License and authors](#license-and-authors)
+
+---
+
+## Installation
+
+```toml
+[dependencies]
+borrow_lite = "0.1"
+```
+
+The default build is `no_std` plus `alloc`, has no dependencies, and turns on
+`diagnostics`. Everything else is opt-in:
+
+| Feature | Default | What it adds |
+|---|---|---|
+| `diagnostics` | yes | Records where every borrow happened, so a conflict can name the borrow that is in the way and the borrow that was refused. Turning it off makes `Inline<u64>` the same size as `RefCell<u64>` (16 bytes). |
+| `std` | no | The `wait` and `retry` helpers. `std::thread::yield_now` needs `std`, which is why they are gated. |
+| `derive` | no | `#[derive(Cell)]`, the one-name alternative to the `cell!` macro. Pulls in a proc-macro crate. |
+| `paste` | no | Lets `cell!` derive a setter name from the field name (`count` -> `count_mut`). Pulls in `paste`. |
+| `unsafe-unchecked` | no | `Unchecked`, a cell with no borrow flags at all, for a caller that has proven no other borrow can exist. |
+
+MSRV is Rust 1.85 (edition 2024), and the `no_std` build and the MSRV are both
+CI jobs rather than claims.
 
 ---
 
@@ -813,7 +842,9 @@ cannot avoid - `-Zmiri-strict-provenance` rejects it, and a regression test in
   crates to look at are `qcell` and `ghost-cell`, which get them by restricting
   what you can express.
 - It does not eliminate `unsafe`. The crate contains a little of it, confined to
-  the cell and guard modules; everything else is safe code on top.
+  the borrow bookkeeping and the types built on it (`state`, `guards`, `inner`,
+  `snapshot`, and `unchecked` under its feature); everything else is safe code on
+  top.
 - It is not a lock. Borrows do not wait. A busy cell returns a conflict, and it
   is up to you whether that is an error or a retry. There is deliberately no
   `wait_until_free` helper: waiting can deadlock, and that is the failure this

@@ -76,8 +76,8 @@ impl WriterLock {
 /// A `Snapshot<T>` holds one value at a time. [`load`](Self::load) returns a
 /// `&T` with no atomic read-modify-write and no conflict: readers never block a
 /// writer, and a writer never refuses a reader. [`store`](Self::store) replaces
-/// the value wholesale, and the previous value is kept alive (see the module
-/// docs) rather than freed.
+/// the value wholesale, and the previous value is kept alive rather than freed
+/// (see [Retired values](#retired-values)).
 ///
 /// It is *not* a drop-in replacement for `std::sync::RwLock` or for
 /// [`Shared`](crate::Shared): the value cannot be mutated in place, and a
@@ -92,6 +92,23 @@ impl WriterLock {
 /// config.store(vec![4, 5]);
 /// assert_eq!(config.load(), &[4, 5]);
 /// ```
+///
+/// # Retired values
+///
+/// A reader that gets `&T` must be able to hold it while a writer publishes a
+/// new value. Freeing the old value at the moment of the swap would leave that
+/// reader with a dangling reference, and the usual ways to avoid it - hazard
+/// pointers, epoch reclamation, a reader count - all put a shared counter back
+/// on the read path, which is the thing this type exists to remove. So the
+/// superseded values are retained in a list owned by the `Snapshot` and freed
+/// together when it is dropped. The read stays a bare `Acquire` load.
+///
+/// The practical consequence, stated plainly: a `Snapshot` written to in a loop
+/// retains every value it has ever held until it is dropped, so memory grows
+/// with the number of writes. That is the right shape for a value replaced
+/// occasionally and read constantly - a config, a routing table, a feature-flag
+/// set - and the wrong shape for a counter or a queue. Use [`Shared`](crate::Shared)
+/// for those.
 ///
 /// # Threads
 ///

@@ -1,7 +1,9 @@
 //! Borrow bookkeeping, in two flavours: single-threaded and atomic.
 //!
-//! All of the `unsafe` in this crate is confined to this file and
-//! the `guards` module; everything else is safe code on top.
+//! The crate's `unsafe` code is confined to the borrow bookkeeping and the
+//! types built directly on it: this file, `guards`, `inner`, `snapshot`, and
+//! (under the `unsafe-unchecked` feature) `unchecked`. Everything else is safe
+//! code on top.
 #![allow(unsafe_code)]
 
 use crate::sync::{AtomicPtr, AtomicUsize, Ordering};
