@@ -173,6 +173,15 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo package --workspace
 
+  # The release tag resolver is plain Python, and a bug in it publishes the
+  # wrong crate or refuses a valid release. Nothing compiles it, so it gets its
+  # own pass. `tomllib` is 3.11+, which `ubuntu-latest` has.
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: python3 -m unittest discover -s scripts/tests -v
+
   # Render the docs the way docs.rs will: nightly, every feature on, and
   # `--cfg docsrs`. Without this, a `doc_cfg` attribute that only compiles
   # under that cfg (or a broken intra-doc link inside a `std`-gated item)
