@@ -12,7 +12,40 @@ line of the borrow that is in the way.
 The value semantics are unchanged. What changes is the failure mode, and how
 easy it is to write code that never hits it.
 
-## The shapes
+## Contents
+
+- **[Getting started](#getting-started)**
+  - [The shapes](#the-shapes)
+  - [Old way vs `borrow_lite`](#old-way-vs-borrow_lite)
+- **[The API, piece by piece](#the-api-piece-by-piece)**
+  - [What changes, in detail](#what-changes-in-detail)
+  - [The cheapest cell: `Inline<T>`](#the-cheapest-cell-inlinet)
+  - [Threads](#threads)
+  - [Observers without the usual re-entrancy bugs](#observers-without-the-usual-re-entrancy-bugs)
+  - [Macros](#macros)
+  - [Named fields without the closure](#named-fields-without-the-closure)
+  - [`#[derive(Cell)]`: the field accessors without the macro](#derivecell-the-field-accessors-without-the-macro)
+  - [`unsafe-unchecked`: no check, no flag](#unsafe-unchecked-no-check-no-flag)
+- **[Trade-offs and limits](#trade-offs-and-limits)**
+  - [What it does not do](#what-it-does-not-do)
+  - [What it is up against](#what-it-is-up-against)
+- **[Performance](#performance)**
+  - [What a borrow costs](#what-a-borrow-costs)
+  - [The fast path without `diagnostics`](#the-fast-path-without-diagnostics)
+  - [Waiting for a busy cell](#waiting-for-a-busy-cell)
+  - [Under contention](#under-contention)
+  - [Many readers, no writer](#many-readers-no-writer)
+  - [What observing costs](#what-observing-costs)
+- **[Testing and evidence](#testing-and-evidence)**
+  - [Testing](#testing)
+- **[License](#license)**
+  - [License and authors](#license-and-authors)
+
+---
+
+## Getting started
+
+### The shapes
 
 | Shape | std | `borrow_lite` |
 |---|---|---|
@@ -47,12 +80,12 @@ let c: Shared<i32> = shared(1);
 assert!(c == c.clone());
 ```
 
-## Old way vs `borrow_lite`
+### Old way vs `borrow_lite`
 
 The honest way to judge ergonomics is to put the code people already write next
 to the code `borrow_lite` asks for, on the same task.
 
-### Side by side: one owner
+#### Side by side: one owner
 
 ```rust
 use std::cell::RefCell;
@@ -73,7 +106,7 @@ assert_eq!(stats.with(Vec::len), 4);
 Same shape, same line count. The only change is `borrow_mut()`/`borrow()` become
 `with_mut(..)`/`with(..)`, which release the borrow before returning.
 
-### Side by side: shared
+#### Side by side: shared
 
 ```rust
 use std::cell::RefCell;
@@ -100,7 +133,7 @@ compounds in a struct full of fields, where the old way is
 `self.field.borrow_mut()` on every access and the new way is one `cell!` accessor
 (see [Named fields without the closure](#named-fields-without-the-closure)).
 
-### Side by side: when it goes wrong
+#### Side by side: when it goes wrong
 
 This is where the two diverge. `std` tells you a borrow exists; `borrow_lite` tells you
 which one.
@@ -136,7 +169,7 @@ two messages (`"already borrowed"` / `"already mutably borrowed"`, or
 `"RefCell already borrowed"` on newer compilers) neither name the offending line
 nor distinguish the case clearly. So you hunt for it by eye.
 
-### How much shorter, measured
+#### How much shorter, measured
 
 "More ergonomic" is worth nothing as a slogan, so the two sides are counted.
 The numbers below are code characters (blank lines and comments dropped) of the
@@ -180,7 +213,7 @@ So the claim is deliberately not "always 50% shorter". It is "the same length
 for one borrow, and 20-81% shorter the moment there is a pattern" - which is
 where `Rc<RefCell<T>>` and `Arc<RwLock<T>>` stop being fun.
 
-### The same tasks in Python
+#### The same tasks in Python
 
 For a reader coming from a language without a borrow checker, the same three
 tasks are shorter still - and it is worth saying why, because it is not a win:
@@ -199,7 +232,7 @@ Python here; it is competing with `RefCell` while keeping a *located* refusal,
 which Python cannot offer at all. `tests/ergonomics.rs` pins these six numbers so
 the comment cannot drift.
 
-### Construct by construct
+#### Construct by construct
 
 The measured table above covers the *repetitive* lines (reads, writes, field
 access). This one is the mapping for the rest - which `std` construct becomes
@@ -220,7 +253,7 @@ Two rows are the whole pitch. A conflict becomes a value you can match on
 instead of a panic or a deadlock, and a borrow you cannot forget to release is
 the default rather than a discipline.
 
-### Where `borrow_lite` is *longer* (the honest column)
+#### Where `borrow_lite` is *longer* (the honest column)
 
 Ergonomics is a trade, not a free win, and a few places cost more keystrokes:
 
@@ -243,9 +276,13 @@ Ergonomics is a trade, not a free win, and a few places cost more keystrokes:
 If those costs matter more than the diagnostics, `RefCell` is a fine choice -
 see [When not to use `borrow_lite`](#when-not-to-use-borrow_lite).
 
-## What changes, in detail
+---
 
-### 1. Panic messages that name the culprit and the victim
+## The API, piece by piece
+
+### What changes, in detail
+
+#### 1. Panic messages that name the culprit and the victim
 
 `RefCell` reports `already borrowed: BorrowMutError`. That is all. You know a
 borrow exists somewhere; you do not know which line, in which function, or
@@ -295,7 +332,7 @@ stats.borrow_mut().push(4);
 # let _ = guard;
 ```
 
-### 2. Conflicts are errors, not panics or deadlocks
+#### 2. Conflicts are errors, not panics or deadlocks
 
 Every borrowing method has a `try_` twin - including `replace` and `take`,
 whose `try_` forms (`try_replace`, `try_take`) hand back the unwritten value
@@ -322,7 +359,7 @@ the same lock deadlocks, and a panic while holding it poisons the lock for
 everyone afterwards. `Shared` never blocks and never poisons: a conflicting
 borrow comes back as `Err(Conflict)`.
 
-### 3. Closures instead of leaked guards
+#### 3. Closures instead of leaked guards
 
 The most common cause of a "borrow conflict" panic is a guard that outlived the
 statement you needed it for:
@@ -374,7 +411,7 @@ let item: &i32 = cell.with(|v| &v[0]); // error: borrowed value does not live lo
 Copy or clone what you need out, or use a guard (`borrow`) when you need to keep
 a reference alive.
 
-### 4. A free path when you already have `&mut`
+#### 4. A free path when you already have `&mut`
 
 The borrow flags exist to guard access through `&self`. When you hold `&mut`,
 the compiler has already proven the handle is unique and no guard is alive, so
@@ -396,20 +433,13 @@ taking it apart once the handles are gone, needs no borrow bookkeeping at all.
 
 The same story covers the rest of the value's lifetime. `into_inner` consumes
 the cell and hands the value back, and `take` empties it in place - the pair to
-`get_mut`, and the same pair `RefCell`/`Rc`/`Arc` offer. `cargo bench --bench
-compare -- unique` prices them against the `std` calls they mirror:
+`get_mut`, and the same pair `RefCell`/`Rc`/`Arc` offer.
 
-| Path | `std` | `borrow_lite` |
-|---|---|---|
-| borrow the value out of a unique handle | `RefCell::get_mut` 0.59 ns | `get_mut` 0.63 ns |
-| consume the cell | `Rc::try_unwrap` 16.9 ns | `into_inner` 16.9 ns |
-| empty it in place | `RefCell::take` 0.89 ns | `take` 1.47 ns |
-
-`get_mut` is free (the 0.04 ns is the `Option::unwrap`), `into_inner` *is*
-`Rc::try_unwrap` plus a move, and `take` pays only the 0.6 ns borrow-flag check
-that every other borrow pays - it is `replace` under a shorter name. So the
-"no bookkeeping" paths are genuinely free, and the one that still checks a flag
-is honest about it.
+`get_mut` is free, `into_inner` *is* `Rc::try_unwrap` plus a move, and `take`
+pays only the borrow-flag check that every other borrow pays - it is `replace`
+under a shorter name. So the "no bookkeeping" paths are genuinely free, and the
+one that still checks a flag is honest about it. The three are priced against
+their `std` counterparts in [What a borrow costs](#what-a-borrow-costs).
 
 Two more value-moving calls round out the surface, both mirroring `RefCell`:
 
@@ -433,7 +463,7 @@ let self_swap = a.try_swap(&a).unwrap_err();
 assert_eq!(self_swap.kind(), borrow_lite::ConflictKind::Writer); // named, not generic
 ```
 
-### 5. The trait surface you already reach for
+#### 5. The trait surface you already reach for
 
 `Local<T>` and `Shared<T>` carry the everyday traits `Rc<RefCell<T>>` and
 `Arc<RwLock<T>>` do - `==`, `Ord`, `Default`, `From`, `ptr_eq` - so you do not
@@ -522,7 +552,7 @@ method. It is the same shared borrow as `map`, released before it returns.
 `get`/`set` remain the closure-free forms for a `Copy` value or a whole-value
 read and store.
 
-## The cheapest cell: `Inline<T>`
+### The cheapest cell: `Inline<T>`
 
 If nothing is shared, you do not need an `Rc` or an `Arc` - and paying for one
 costs you an allocation per cell. `Inline<T>` is the `RefCell<T>` shape: the
@@ -560,7 +590,7 @@ rather than a single flag. Turn the `diagnostics` feature off and it is the
 same 16 bytes as `RefCell<u64>`, at the cost of the located message. Fine for a
 struct; for a million-element array, use `Cell` or `RefCell`.
 
-## Threads
+### Threads
 
 ```rust
 use borrow_lite::shared;
@@ -588,10 +618,10 @@ cell between threads you need `Shared<T>`, because the single-threaded flags are
 plain `Cell`s.
 
 Retrying with `yield_now` rather than `spin_loop` is not a style choice - it is
-the measured winner. [Cost under contention](#cost-under-contention) and
+the measured winner. [Under contention](#under-contention) and
 [Waiting for a busy cell](#waiting-for-a-busy-cell) have the numbers.
 
-## Observers without the usual re-entrancy bugs
+### Observers without the usual re-entrancy bugs
 
 The observer pattern is where `Rc<RefCell<...>>` usually falls apart, so it is
 included as a worked example. `Observable<T>` keeps its observers in a
@@ -634,7 +664,7 @@ honours, so the round finishes and none of it is re-registered. Observers
 subscribed *after* the clear survive, which keeps the "a new observer still sees
 the current value" rule intact.
 
-## Macros
+### Macros
 
 ```rust
 use borrow_lite::{borrow, borrow_mut, try_borrow_mut, with, with_mut, Local};
@@ -663,7 +693,7 @@ push(&cell, 6).unwrap();
 assert_eq!(cell.with(|v| v.clone()), vec![1, 2, 3, 4, 5, 6]);
 ```
 
-## Named fields without the closure
+### Named fields without the closure
 
 The macros above still make you name the whole struct. When a cell holds a
 struct you read and write field by field, `cell!` generates one accessor pair per
@@ -702,7 +732,7 @@ the `with` closure it replaces) and reports the same conflicts. The limit is the
 one that comes with a single cell: two reads compose, but a read and a write
 cannot overlap, exactly as `RefCell<Struct>` would behave.
 
-## `#[derive(Cell)]`: the field accessors without the macro
+### `#[derive(Cell)]`: the field accessors without the macro
 
 `cell!` needs two names and an explicit field list. The optional `derive`
 feature generates the same handle from the value struct, so the list is the
@@ -739,7 +769,7 @@ The handle is exactly what `cell!` produces, so the same three rules apply:
 - it inherits the visibility of the value struct, so a private struct gets a
   private handle rather than one that leaks the value through `Deref::Target`.
 
-## `unsafe-unchecked`: no check, no flag
+### `unsafe-unchecked`: no check, no flag
 
 The checked cells are the point of the crate, but there is one case where the
 check is provably unnecessary: a cell built with `&mut` access, used before it is
@@ -773,7 +803,11 @@ shared reference over the live `&mut T` and be undefined behaviour the caller
 cannot avoid - `-Zmiri-strict-provenance` rejects it, and a regression test in
 `tests/unchecked.rs` pins the placeholder.
 
-## What it does not do
+---
+
+## Trade-offs and limits
+
+### What it does not do
 
 - It does not check borrows at compile time. If you want static guarantees, the
   crates to look at are `qcell` and `ghost-cell`, which get them by restricting
@@ -792,14 +826,14 @@ cannot avoid - `-Zmiri-strict-provenance` rejects it, and a regression test in
   comes from the `Rc`, and for `Inline` from the `Cell` flags themselves; both
   are asserted in the tests.
 
-## What it is up against
+### What it is up against
 
 `borrow_lite` is not the only answer to "shared mutable state in Rust", and it is
 not always the right one. This section is the honest placement: which crate
 wins which workload, measured or read from source, and where `borrow_lite` should
 not be used at all.
 
-### The alternatives, by what they trade
+#### The alternatives, by what they trade
 
 | Crate | Guarantee | Cost | When it wins |
 |---|---|---|---|
@@ -813,24 +847,15 @@ not be used at all.
 | `ghost-cell`, `qcell` | **compile time** | brand/token plumbing | when you can afford lifetimes everywhere to get zero runtime checks |
 | `borrow_lite` | runtime, reports, never blocks | ~0.3 ns per borrow | low contention, short borrows, re-entrancy, and diagnostics you can act on |
 
-### Where `borrow_lite` wins, and by how much
+#### Where `borrow_lite` wins, and by how much
 
 - **In a release build, with `--no-default-features`, it matches `RefCell` and
   `Rc<RefCell>` and beats both `RwLock`s.** The borrow path with `diagnostics`
   off is a load and a store with no `Location` to write, so the single-threaded
   cell costs what `RefCell` costs; the threaded cell is faster than `RwLock` and
   `parking_lot::RwLock` on the fast path because it never has to be able to
-  park a waiter. Criterion medians, `cargo bench --no-default-features`,
-  release, rustc 1.99.1:
-
-  | Operation | `std` | `borrow_lite` (no `diagnostics`) | Ratio |
-  |---|---|---|---|
-  | read, one thread | `Rc<RefCell>` 1.19 ns | `Local` 1.19 ns | **1.00x** |
-  | write, one thread | `Rc<RefCell>` 1.49 ns | `Local` 1.47 ns | **0.99x** |
-  | read, shared | `RwLock` 5.15 ns | `Shared` 4.16 ns | **0.81x** |
-  | write, shared | `RwLock` 4.66 ns | `Shared` 2.35 ns | **0.50x** |
-  | read, shared | `parking_lot` 5.93 ns | `Shared` 4.24 ns | **0.72x** |
-  | write, shared | `parking_lot` 5.18 ns | `Shared` 2.37 ns | **0.46x** |
+  park a waiter. The six numbers are in [The fast path without
+  `diagnostics`](#the-fast-path-without-diagnostics).
 
   The cells it does **not** beat are stated with their gap, and the two regimes
   are kept apart. On the single-threaded fast path a bare `AtomicU64` read is
@@ -843,8 +868,8 @@ not be used at all.
   *contended read-mostly* regime, not the fast path: at eight threads on
   read-mostly work `Shared` loses by hundreds of times (120 ms against 251 µs),
   because every reader writes the borrow count's cache line and an `Arc` read
-  does not. Both numbers are in the section below; neither is a claim to have
-  been closed.
+  does not. Both numbers are in [Many readers, no writer](#many-readers-no-writer);
+  neither is a claim to have been closed.
 
 - **Against `RefCell`** (with `diagnostics` on, the default): the borrow path
   costs about +0.3 ns (1.51 vs 1.19 ns for a read). In exchange, a refused
@@ -882,7 +907,7 @@ not be used at all.
   when the value must be owned past the cell); keep `Shared` for the cases that
   need in-place mutation and conflict reporting.
 
-### The gap that cannot be closed, and what to do instead
+#### The gap that cannot be closed, and what to do instead
 
 The read-mostly gap is structural for any cell that counts borrows, because the
 count is shared state mutated per borrow. Two things follow.
@@ -950,7 +975,7 @@ A later review of the same area found two more holes, both now closed:
   release path had the mirror gap). Folding presence and location into the one
   `AtomicPtr` compare-exchange removes the window; `tests/loom.rs` now models it.
 
-### When not to use `borrow_lite`
+#### When not to use `borrow_lite`
 
 Say it plainly, because a crate that hides its own limits is not trustworthy:
 
@@ -970,48 +995,29 @@ Say it plainly, because a crate that hides its own limits is not trustworthy:
 If your case is not one of those four, `borrow_lite` is likely a strict
 improvement over the `RefCell`/`RwLock` you would have written.
 
-## Waiting for a busy cell
+---
 
-The benchmarks changed a design decision. The obvious retry loop is
-`spin_loop()`, and it is the *worst* option measured - 14.4 ms against 0.93 ms
-for yielding, on the same cell, at eight threads. Yielding wins because the
-critical section is nanoseconds and a spin burns a core that the holder needs.
-So the `std` feature ships the loop that measured fastest rather than leaving
-each caller to discover it:
+## Performance
 
-```rust
-use borrow_lite::shared;
+Every number here is a criterion median from `cargo bench` on one 4-core AMD
+EPYC 9B14 container, rustc 1.99.1, and each table names the bench group it came
+from. Treat them as orders of magnitude, not absolutes: the single-thread
+numbers are stable, the multi-threaded ones move between runs, and the *ranking*
+is the finding rather than any last digit. The multi-threaded benches check
+themselves, though not all the same way. The `borrow_lite` and lock arms of
+`contention` and `retry` read the counter before and after and fail the run on a
+lost update; `readonly` asserts that no read was refused and that the read sums
+match. The `AtomicU64` baseline in `contention` is the exception - it returns its
+final count without an expected value. The single-thread benches have no such
+guard; there the numbers are only as good as the harness, and the caveats below
+record where it misled.
 
-let counter = shared(0usize);
-std::thread::scope(|scope| {
-    for _ in 0..4 {
-        scope.spawn(|| {
-            for _ in 0..1_000 {
-                // The `std` feature's `retry(n, op)` wraps exactly this loop.
-                while counter.try_with_mut(|c| *c += 1).is_err() {
-                    std::thread::yield_now();
-                }
-            }
-        });
-    }
-});
-assert_eq!(counter.with(|c| *c), 4_000);
-```
+### What a borrow costs
 
-`wait()` is one `thread::yield_now()`. `retry(n, op)` calls `op` up to `n`
-times, yielding between attempts, and returns the last `Conflict` if they all
-fail. It is **bounded** on purpose: the crate still has no unbounded
-`wait_until_free`, because waiting forever can deadlock and that is the failure
-this crate exists to avoid. `retry` is opt-in via the `std` feature; the default
-build stays `no_std` and has neither helper. Both are exercised in
-`tests/wait.rs`, and the example above stays on the core API so it compiles
-without the feature.
-
-## Cost
-
-The diagnostics are not free, so here is what they cost. Numbers are criterion
-medians from `cargo bench` on one 4-core AMD EPYC 9B14 container, rustc 1.99.1.
-Treat them as orders of magnitude, not as absolutes.
+The diagnostics are not free, so here is what they cost, with `diagnostics` on
+(the default). Numbers are from `cargo bench --bench compare`. The value-moving
+paths (`get_mut`, `into_inner`, `take`) are from its `unique` group, next to the
+`std` calls they mirror.
 
 | Operation | `std` | `borrow_lite` | Difference |
 |---|---|---|---|
@@ -1021,6 +1027,9 @@ Treat them as orders of magnitude, not as absolutes.
 | write a scalar (`set`) | `Cell::set` 0.59 ns | 1.19 ns | +0.60 ns |
 | read borrow, shared | 5.15 ns | 4.20 ns | **faster** |
 | write borrow, shared | 4.65 ns | 3.88 ns | **faster** |
+| borrow out of a unique handle (`get_mut`) | `RefCell::get_mut` 0.59 ns | 0.63 ns | +0.04 ns |
+| consume the cell (`into_inner`) | `Rc::try_unwrap` 16.9 ns | 16.9 ns | same |
+| empty it in place (`take`) | `RefCell::take` 0.89 ns | 1.47 ns | +0.58 ns |
 | refused write borrow | 0.60 ns | 0.69 ns | +0.09 ns |
 | handle clone | 0.98 ns | 0.97 ns | same |
 | allocate a cell | 9.62 ns | 9.58 ns | same |
@@ -1030,7 +1039,7 @@ Treat them as orders of magnitude, not as absolutes.
 | read a conflict's fields | - | 5.6 ns | - |
 | a refused `borrow_mut` (panic + unwind) | 2.14 µs | 2.29 µs | +0.15 µs |
 
-Four things are worth reading out of that table.
+Five things are worth reading out of that table.
 
 **The threaded cell is faster than `RwLock`, not slower.** That is not a
 trick: `RwLock` has to be able to park a waiting thread, so its fast path still
@@ -1103,50 +1112,94 @@ and LLVM deleted the borrow entirely. Both sides now write through the cell, and
 the `Cell` baseline is behind a `black_box`. If a benchmark here ever looks
 implausibly good, suspect the optimiser before the crate.
 
-## Cost under contention
+### The fast path without `diagnostics`
 
-The table above is one thread at a time. Under contention the *retry strategy*
-matters more than the nanoseconds - more than the choice of cell, as it turns
-out. Same machine, `cargo bench --bench contention`, medians, four cores. Every
-thread increments one counter.
+Turning `diagnostics` off drops the holder from the single-threaded cell, so
+`Inline<u64>` is 16 bytes and the borrow path is a load and a store with no
+`Location` to write. In that build the single-threaded cell matches `RefCell`,
+and the threaded cell beats both `RwLock`s on the fast path because it never has
+to be able to park a waiter. `cargo bench --no-default-features`, release,
+rustc 1.99.1:
 
-| Threads | `AtomicU64` | `Arc<RwLock>` | `parking_lot` | `borrow_lite` `yield` | `borrow_lite` `spin` |
-|---|---|---|---|---|---|
-| 1 | 91 µs | 153 µs | 153 µs | 114 µs | 111 µs |
-| 2 | 216 µs | 1.14 ms | 311 µs | 218 µs | 622 µs |
-| 4 | 936 µs | 1.54 ms | 729 µs | **523 µs** | 5.20 ms |
-| 8 | 1.52 ms | 2.91 ms | 1.17 ms | **932 µs** | 14.36 ms |
+| Operation | `std` | `borrow_lite` (no `diagnostics`) | Ratio |
+|---|---|---|---|
+| read, one thread | `Rc<RefCell>` 1.19 ns | `Local` 1.19 ns | **1.00x** |
+| write, one thread | `Rc<RefCell>` 1.49 ns | `Local` 1.47 ns | **0.99x** |
+| read, shared | `RwLock` 5.15 ns | `Shared` 4.16 ns | **0.81x** |
+| write, shared | `RwLock` 4.66 ns | `Shared` 2.35 ns | **0.50x** |
+| read, shared | `parking_lot` 5.93 ns | `Shared` 4.24 ns | **0.72x** |
+| write, shared | `parking_lot` 5.18 ns | `Shared` 2.37 ns | **0.46x** |
 
-The `yield` and `parking_lot` columns were added after this section was first
-written, and they change the conclusion. `parking_lot::RwLock` is the real
-competitor - it packs its whole state into one word and takes a single CAS on
-the fast path, so it beats `std::sync::RwLock` everywhere here (311 µs vs
-1.14 ms at two threads). Comparing only against `std` flattered `borrow_lite`;
-comparing against `parking_lot` is the honest test, and `borrow_lite` with a
-yielding retry still wins at 4 and 8 threads (1.4x and 1.26x). At two threads it
-is level (218 µs vs 311 µs), and at one thread `parking_lot` ties `std`.
+### Waiting for a busy cell
+
+The benchmarks changed a design decision. The obvious retry loop is
+`spin_loop()`, and it is the *worst* option measured - 14.4 ms against 0.93 ms
+for yielding, on the same cell, at eight threads. Yielding wins because the
+critical section is nanoseconds and a spin burns a core that the holder needs.
+So the `std` feature ships the loop that measured fastest rather than leaving
+each caller to discover it:
+
+```rust
+use borrow_lite::shared;
+
+let counter = shared(0usize);
+std::thread::scope(|scope| {
+    for _ in 0..4 {
+        scope.spawn(|| {
+            for _ in 0..1_000 {
+                // The `std` feature's `retry(n, op)` wraps exactly this loop.
+                while counter.try_with_mut(|c| *c += 1).is_err() {
+                    std::thread::yield_now();
+                }
+            }
+        });
+    }
+});
+assert_eq!(counter.with(|c| *c), 4_000);
+```
+
+`wait()` is one `thread::yield_now()`. `retry(n, op)` calls `op` up to `n`
+times, yielding between attempts, and returns the last `Conflict` if they all
+fail. It is **bounded** on purpose: the crate still has no unbounded
+`wait_until_free`, because waiting forever can deadlock and that is the failure
+this crate exists to avoid. `retry` is opt-in via the `std` feature; the default
+build stays `no_std` and has neither helper. Both are exercised in
+`tests/wait.rs`, and the example above stays on the core API so it compiles
+without the feature.
+
+### Under contention
+
+The tables above are one thread at a time. Under contention the *retry
+strategy* matters more than the nanoseconds - more than the choice of cell, as
+it turns out. Every thread increments one counter. The numbers come from `cargo
+bench --bench contention`, which waits with `spin_loop`, and `cargo bench --bench
+retry`, which adds the yielding and backing-off loops; both use the same
+workload (20,000 increments per thread), so they are comparable, and the
+`backoff` column is the one the `retry` run contributes.
+
+| Threads | `AtomicU64` | `Arc<RwLock>` | `parking_lot` | `borrow_lite` `spin` | `borrow_lite` `yield` | `borrow_lite` `backoff` |
+|---|---|---|---|---|---|---|
+| 1 | 91 µs | 153 µs | 153 µs | 111 µs | 114 µs | - |
+| 2 | 216 µs | 1.14 ms | 311 µs | 622 µs | **218 µs** | 498 µs |
+| 4 | 936 µs | 1.54 ms | 729 µs | 5.20 ms | **523 µs** | 688 µs |
+| 8 | 1.52 ms | 2.91 ms | 1.17 ms | 14.36 ms | **932 µs** | 1.78 ms |
+
+The finding is in the three `borrow_lite` columns: the cell is identical in all
+three, and only the waiting differs. With a spinning retry it is the slowest
+option on the board; with a yielding one it wins at four and eight threads
+(1.4x and 1.26x over `parking_lot`). The loss was never the cell, it was the
+loop - and the loop is the part you control.
+
+`parking_lot::RwLock` is the real competitor: it packs its whole state into one
+word and takes a single CAS on the fast path, so it beats `std::sync::RwLock`
+everywhere here (311 µs against 1.14 ms at two threads). Comparing only against
+`std` flattered `borrow_lite`; comparing against `parking_lot` is the honest
+test, and `borrow_lite` with a yielding retry still wins at 4 and 8 threads. At
+two threads it is level (218 µs against 311 µs), and at one thread `parking_lot`
+ties `std`.
 
 Thread creation is 44-223 µs of each number, so subtract roughly that to read
 the contended part.
-
-That table made an earlier version of this README say `borrow_lite` loses under
-contention. That was wrong, and the reason is worth reading: the loss is the
-waiting loop, not the cell. The benchmark above waits with `spin_loop()`, which
-burns the core it is standing on. `cargo bench --bench retry` compares four ways
-of waiting for the same cell, at 2, 4 and 8 threads:
-
-| Threads | `spin_loop` | `yield_now` | backoff | `Arc<RwLock>` |
-|---|---|---|---|---|
-| 2 | 738 µs | **226 µs** | 498 µs | 1.14 ms |
-| 4 | 4.85 ms | **574 µs** | 688 µs | 1.57 ms |
-| 8 | 14.2 ms | **1.01 ms** | 1.78 ms | 2.97 ms |
-
-With `thread::yield_now()` in the retry loop, `borrow_lite` beats `RwLock` at
-every thread count - 2.5x at four threads, 2.9x at eight - and the numbers are
-stable across runs. It wins for the reason it wins the single-borrow case:
-`RwLock` has to park and unpark a thread to wait, which costs microseconds, and
-the borrow itself costs about 2 ns. Yielding hands the core back and the borrow
-is long free by the time the thread runs again.
 
 The naive `spin_loop()` loop is the worst option on the list, and it is the one
 most people write. Spinning only pays off when the wait is shorter than a
@@ -1158,13 +1211,21 @@ plain yielding gives up immediately. A useful negative result - for
 nanosecond-long sections, do not spin first.
 
 The obvious objection is that backoff should win when the critical section is
-long enough to be worth spinning for. It was measured (`retry/section` now runs
+long enough to be worth spinning for. It was measured (`retry/section` runs
 `backoff` alongside the others) and it does not: across work levels 0, 64, 256
 and 1024 it measured 368, 325, 326 and 321 µs, against 223, 253, 256 and 252 µs
 for plain `yield` - consistently about 45% slower, and flat rather than
 improving as the section grows. Spinning only pays when the wait is shorter than
 a context switch *and* the holder is guaranteed to be running; a retry loop
 cannot promise the second, so the spin phase is a bet that loses either way.
+
+The same group also sweeps the length of the exclusive borrow with `spin` and
+`yield` side by side, four threads, two runs. `yield` is flat - 223 to 284 µs
+regardless of how long the borrow is held, and roughly half of `RwLock` at every
+level - while `spin` is both slower and erratic, swinging 2.76 ms to 1.38 ms at
+the same work level in different runs, so its individual numbers are not worth
+reading. The earlier claim that `borrow_lite` degrades with section length was
+an artefact of spinning, and does not survive the yielding loop.
 
 Two honest caveats.
 
@@ -1173,24 +1234,6 @@ and 1.14 ms across three runs; `backoff/4` measured 1.09 ms and 688 µs. Treat
 the table as orders of magnitude, and the *ranking* - `yield` best, `spin`
 worst - as the finding, since that held in every run.
 
-**The long-section sweep is now measured for `yield` too.** The group
-`retry/section` runs the same 0, 64, 256, 1024 work levels through `spin`,
-`yield` and `RwLock`, four threads, two runs:
-
-| Work per acquisition | `spin_loop` (run 1 / run 2) | `yield_now` (run 1 / run 2) | `Arc<RwLock>` |
-|---|---|---|---|
-| 0 | 1.35 ms / 1.28 ms | 235 µs / 223 µs | 454 µs |
-| 64 | 2.76 ms / 1.38 ms | 260 µs / 259 µs | 472 µs |
-| 256 | 2.83 ms / 1.31 ms | 284 µs / 267 µs | 477 µs |
-| 1024 | 1.44 ms / 1.41 ms | 259 µs / 258 µs | 477 µs |
-
-`yield` is flat - 223 to 284 µs regardless of how long the borrow is held, and
-roughly half of `RwLock` at every level. The earlier claim that `borrow_lite`
-degrades with section length was an artefact of spinning, and does not survive
-the yielding loop. `spin` is both slower and erratic here, swinging 2.76 ms to
-1.38 ms at the same work level in different runs; its numbers are not worth
-reading individually.
-
 That said, the advice is unchanged, because the reason is different. Yielding
 still works when the borrow is long, but the moment a borrow is held across a
 long section you probably want a lock for other reasons - you cannot nest
@@ -1198,7 +1241,7 @@ borrows, and a retry loop makes the section's length everyone's problem. Use
 `yield_now` for short sections and genuine re-entrancy; use a real lock when the
 section is long or the access pattern is a queue.
 
-## Many readers, no writer
+### Many readers, no writer
 
 Every other contended benchmark here involves a writer. The pure-read case is
 the one a read-write lock is meant to excel at, so it is worth measuring on its
@@ -1266,7 +1309,7 @@ If you do contend, retry with `yield_now` rather than `spin_loop`. And if the
 borrow is held for a long time, use a real lock - a busy-wait is the wrong shape
 for that regardless of which cell is underneath.
 
-## What observing costs
+### What observing costs
 
 `Observable<T>` had no performance data at all before this: the other suites
 measure borrows, and observing is a different path. `cargo bench --bench
@@ -1345,24 +1388,18 @@ times, which is exactly when the observer pattern is the wrong shape anyway.
 
 `Observable` now has the same value-lifetime paths `Local` does - `get_mut`,
 `into_inner`, `replace`/`try_replace`, `take`/`try_take`, plus the read twins
-`with`/`try_with` and the closure-free `get`/`try_get` - and
-`cargo bench --bench observable -- lifecycle` prices them
-against `Local` so the notification is visible in the difference:
-
-| Path | `Local` | `Observable` |
-|---|---|---|
-| `get_mut` (unique handle) | 0.66 ns | 0.65 ns |
-| `into_inner` | 18.3 ns | 34.1 ns |
-| `take` | 1.6 ns | 26 ns (0 observers), 108 ns (16) |
-
-`get_mut` is identical - it reaches straight into the value cell. `into_inner`
-costs 16 ns more because an `Observable` owns *two* `Rc`s (the value and the
-observer list), so consuming it is two deallocations, not one. `take` is the
-interesting one: it must notify, because observers are supposed to see the value
-change, so it pays `Local::take` plus a full notification round - 26 ns with
-nobody listening, rising with the observer count exactly as `update` does. If
-you want to empty the cell without telling anyone, `update` it to a default
-yourself; `take` is the version that keeps observers honest.
+`with`/`try_with` and the closure-free `get`/`try_get`. `cargo bench --bench
+observable -- lifecycle` prices them against `Local` so the notification is
+visible in the difference. `get_mut` is identical (0.65 ns against `Local`'s
+0.66 ns) because it reaches straight into the value cell. `into_inner` costs
+16 ns more (34.1 ns against 18.3 ns) because an `Observable` owns *two* `Rc`s
+(the value and the observer list), so consuming it is two deallocations, not
+one. `take` is the interesting one: it must notify, because observers are
+supposed to see the value change, so it pays `Local::take` plus a full
+notification round - 26 ns with nobody listening against `Local`'s 1.6 ns,
+rising to 108 ns with 16 observers, exactly as `update` does. If you want to
+empty the cell without telling anyone, `update` it to a default yourself;
+`take` is the version that keeps observers honest.
 
 One benchmark bug worth recording, because it nearly produced a false headline.
 The `Local::with_mut` reference first measured **1.9 µs** for 200,000 iterations
@@ -1372,23 +1409,34 @@ optimiser had collapsed the plain-cell loop to a single assignment, while
 comparison would have shown a fake 2500x gap. A `black_box` on the stored value
 in both loops fixed it; the honest gap is 25x.
 
-## Testing
+---
+
+## Testing and evidence
+
+### Testing
 
 ```text
 cargo test --all-targets
 cargo test --doc
 cargo test --features std --all-targets   # the `retry`/`wait` helper
 cargo test --features std --doc
+# `diagnostics` is on by default, so this is the only pass that compiles the
+# crate without it - the mode that drops `Inline` to 16 bytes.
+cargo test --no-default-features --all-targets
+cargo test --no-default-features --doc
 cargo clippy --all-targets -- -D warnings
 cargo clippy --features std --all-targets -- -D warnings
+cargo clippy --no-default-features --all-targets -- -D warnings
 cargo clippy --workspace --all-features --all-targets -- -D warnings
 cargo test --workspace --all-features --all-targets  # every feature at once
 cargo fmt --check
-cargo bench                       # all five suites
+cargo bench                       # all six suites
 cargo bench --bench compare       # the two cells, next to the `std` types
 cargo bench --bench retry         # wait strategies, and the section sweep
+cargo bench --bench contention    # the retry strategies under contention
 cargo bench --bench readonly      # many readers, no writer
 cargo bench --bench observable    # the observer path, including refusals
+cargo bench --bench ergonomic_paths  # the ergonomic call paths, next to `std`
 cargo bench -- --test             # run each bench once, assertions included
 
 # One loom model is `#[ignore]`d on purpose: it fails on the shipped two-location
@@ -1459,7 +1507,7 @@ Both examples are run in CI (`demo` walks the whole API, `sizes` prints the
 handle and guard sizes), because `cargo test --all-targets` only *compiles*
 them.
 
-### The borrow protocol under a model checker
+#### The borrow protocol under a model checker
 
 `tests/concurrency.rs` runs real threads under Miri, which catches real bugs but
 only on the interleavings it happens to hit. Two more tools go further:
@@ -1540,7 +1588,11 @@ library's normal build. Edition 2024, MSRV 1.85 (the first release with that
 edition). The `no_std` build and the MSRV are both CI jobs, so neither claim can
 rot quietly.
 
-## License and authors
+---
+
+## License
+
+### License and authors
 
 Licensed under the Apache License, Version 2.0 - see [`LICENSE`](LICENSE) for
 the full text.
