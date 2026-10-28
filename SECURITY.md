@@ -78,4 +78,5 @@ usually faster to triage against them:
 - a **mutation sweep** over the borrow bookkeeping confirms each assertion fails
   when the branch it guards is broken.
 
-See the README's "Evidence, not claims" section for the details.
+See the README's [Testing and evidence](README.md#testing-and-evidence)
+section for the details.
