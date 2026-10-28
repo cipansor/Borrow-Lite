@@ -44,6 +44,7 @@ easy it is to write code that never hits it.
   - [What observing costs](#what-observing-costs)
 - **[Testing and evidence](#testing-and-evidence)**
   - [Testing](#testing)
+- **[Releasing](#releasing)**
 - **[License](#license)**
   - [License and authors](#license-and-authors)
 
@@ -1618,6 +1619,50 @@ dev-dependency, and `loom` a `cfg(loom)`-gated one, so neither is part of the
 library's normal build. Edition 2024, MSRV 1.85 (the first release with that
 edition). The `no_std` build and the MSRV are both CI jobs, so neither claim can
 rot quietly.
+
+---
+
+## Releasing
+
+The two crates version independently, so a release is one tag per crate:
+`<crate>-v<version>`. There is deliberately no bare `v<version>` tag - it could
+not say which crate it meant, and treating it as "release everything" is how a
+crate with no changes ends up with a version bump it never earned.
+
+```sh
+# borrow_lite_derive changed, borrow_lite did not:
+git tag borrow_lite_derive-v0.1.1
+git push origin borrow_lite_derive-v0.1.1
+```
+
+Pushing the tag starts
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which checks
+the tag against the manifest, runs the build and test gate, publishes that one
+crate, and opens a GitHub release with notes built from the commits that touched
+that crate only.
+
+A few things worth knowing:
+
+- **Push one tag at a time.** A single push carrying several tags starts the
+  workflow once, for one of them, not once per tag.
+- **`borrow_lite_derive` first.** `borrow_lite` depends on it by version, so
+  publishing the main crate before the sibling exists fails with a resolver
+  error. The workflow prints that as an explicit message rather than an opaque
+  failure, and `cargo publish --dry-run` catches it before the upload.
+- **A patch to the sibling does not force a release of the main crate.** The
+  dependency is `^0.1.0`, so `borrow_lite_derive` 0.1.1 satisfies it; only a
+  change that breaks the generated code needs a matching `borrow_lite` bump.
+- **Re-runs are safe.** A version already on crates.io is reported and skipped,
+  so a `workflow_dispatch` run finishes whatever a partial release left.
+- **`v0.1.0` is the one legacy tag.** Both crates were first released under that
+  single tag, before this scheme existed. It is still the baseline the first
+  per-crate release is compared against, and it is never published again.
+
+Authentication uses [Trusted Publishing](https://crates.io/docs/trusted-publishing)
+(OIDC), so no long-lived API token is stored. Configure it per crate under the
+crate's Settings -> Trusted Publishing, with repository `cipansor/Borrow-Lite`
+and workflow `release.yml`. A `CRATES_IO_TOKEN` secret is accepted as a fallback
+for a crate that has not been switched over yet.
 
 ---
 

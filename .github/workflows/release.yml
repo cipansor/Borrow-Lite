@@ -1,0 +1,209 @@
+name: Release
+
+# Tag-driven, one crate per tag: pushing `borrow_lite_derive-v0.1.1` publishes
+# borrow_lite_derive at 0.1.1 and nothing else. The crates version independently,
+# so there is no bare `v<version>` tag - it could not say which crate it meant,
+# and "release everything" is how a crate with no changes ends up with a version
+# bump it never earned. A mistaken `v0.1.1` still starts this workflow (see the
+# filter below) so that it fails with an explanation rather than matching nothing
+# and looking like success.
+#
+# `workflow_dispatch` is there for a re-run after a partial release; it takes the
+# tag as an input. A crate whose version is already on crates.io is reported and
+# skipped rather than failing the run, so a second run finishes the rest.
+#
+# A push carrying several tags starts this workflow ONCE, for one of them, not
+# once per tag. Push one tag at a time.
+on:
+  push:
+    # `*-v*` is the real tag shape. `v*` is here only so a mistaken bare
+    # `v0.1.1` tag starts the workflow and fails at the check below with an
+    # explanation, instead of matching nothing and looking like success.
+    tags: ["*-v*", "v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, e.g. borrow_lite-v0.1.1"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+# The default is read-only, and `id-token: write` (needed to request the OIDC
+# token crates.io exchanges for a short-lived publish token) is granted only to
+# the `publish` job, so the `verify` job cannot mint one. `contents: write` on
+# that job is for the GitHub release at the end.
+permissions:
+  contents: read
+
+jobs:
+  # A tag is a promise that the code works, so gate the publish on the checks CI
+  # runs. This job is the only thing standing between a bad commit and an upload
+  # that cannot be undone.
+  #
+  # It repeats a subset of `ci.yml` rather than calling it: the full CI includes
+  # miri, fuzz and loom, which take about an hour between them and would put that
+  # wait in front of every release. The subset here is the part that catches a
+  # broken build in minutes.
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # First, before the toolchain, so a wrong tag fails in seconds instead of
+      # after the test suite. Reads the manifests with `tomllib`, no cargo.
+      - name: Check the tag names one crate
+        run: python3 scripts/release.py --check "$RELEASE_TAG"
+
+      # The resolver decides which crate gets published, so its own tests run
+      # before anything is uploaded.
+      - name: Test the release scripts
+        run: python3 -m unittest discover -s scripts/tests -v
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+      - run: cargo test --workspace --all-features --all-targets
+      - run: cargo test --workspace --all-features --doc
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      # Full history, not the default shallow clone: the release notes are built
+      # from `git log` over the crate's directory and from its previous tag, and
+      # a shallow checkout would silently produce an empty range.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      # Trusted Publishing: the job presents a GitHub-signed OIDC token, and
+      # crates.io returns a publish token valid for 30 minutes, revoked in this
+      # action's post step. Configured under the crate's Settings -> Trusted
+      # Publishing (repository `cipansor/Borrow-Lite`, workflow `release.yml`).
+      #
+      # `continue-on-error` keeps the secret fallback below reachable: on a crate
+      # where trusted publishing is not configured yet the exchange fails, and
+      # without this the job would stop before it could use the token.
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1
+        continue-on-error: true
+
+      # Trusted Publishing is the intended path; `CRATES_IO_TOKEN` is the
+      # fallback for a crate that has not been switched over yet, or for a manual
+      # dispatch while the trusted publisher entry is being set up. Both are read
+      # into a single output so the publish step does not care which won.
+      - name: Resolve the credential
+        id: cred
+        env:
+          OIDC_TOKEN: ${{ steps.auth.outputs.token }}
+          FALLBACK_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "$OIDC_TOKEN" ]; then
+            token="$OIDC_TOKEN"; source="trusted publishing"
+          elif [ -n "$FALLBACK_TOKEN" ]; then
+            token="$FALLBACK_TOKEN"; source="CRATES_IO_TOKEN secret"
+          else
+            echo "::error::no crates.io credential: configure Trusted Publishing for this crate, or set the CRATES_IO_TOKEN secret"
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          echo "source=$source" >> "$GITHUB_OUTPUT"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+          echo "authenticating with $source"
+
+      # An upload cannot be undone and the same version cannot be published
+      # twice, so this catches a manifest or file-set problem while it is still
+      # free. No `--strict`: a crate here that depends on the sibling is
+      # legitimately "blocked" until the sibling is uploaded, and `--strict`
+      # would fail the release before it started.
+      - name: Dry-run the publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.cred.outputs.token }}
+        run: cargo publish -p "$(python3 scripts/release.py --tag "$RELEASE_TAG" --print crate)" --dry-run
+
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.cred.outputs.token }}
+        run: |
+          set -euo pipefail
+          crate=$(python3 scripts/release.py --tag "$RELEASE_TAG" --print crate)
+          version=$(python3 scripts/release.py --tag "$RELEASE_TAG" --print version)
+
+          # A second run of the same version is refused outright, so a re-run
+          # after a partial release reports and skips instead of failing.
+          if curl -sSf -A "borrow-lite-release (github actions)" \
+              "https://crates.io/api/v1/crates/$crate/$version" >/dev/null 2>&1; then
+            echo "$crate $version is already on crates.io; skipping the publish"
+            exit 0
+          fi
+
+          set +e
+          output=$(cargo publish -p "$crate" 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ $status -ne 0 ]; then
+            # The two messages cargo gives when a workspace dependency is not on
+            # the registry yet. Without this the release stops on an opaque
+            # resolver error and the fix is not obvious.
+            if grep -qE "no matching package named|failed to select a version for the requirement" <<<"$output"; then
+              echo "::error::$crate depends on a workspace crate that is not on crates.io at the required version. Release that crate first with its own tag, e.g. borrow_lite_derive-vX.Y.Z."
+            fi
+            exit $status
+          fi
+
+      # The index does not update instantly, and a dependent crate resolves its
+      # sibling through it. Wait for the version to appear rather than racing it.
+      - name: Confirm the crate is in the index
+        run: |
+          set -euo pipefail
+          crate=$(python3 scripts/release.py --tag "$RELEASE_TAG" --print crate)
+          version=$(python3 scripts/release.py --tag "$RELEASE_TAG" --print version)
+          for attempt in $(seq 1 60); do
+            if curl -sSf -A "borrow-lite-release (github actions)" \
+                "https://crates.io/api/v1/crates/$crate/$version" >/dev/null 2>&1; then
+              echo "$crate $version is in the index"
+              exit 0
+            fi
+            echo "waiting for $crate $version (attempt $attempt)"
+            sleep 10
+          done
+          echo "::error::timed out waiting for $crate $version to reach the index"
+          exit 1
+
+      # Notes are generated from the commits that touched this crate only, so a
+      # release for one crate does not list the other crate.
+      - name: Generate the release notes
+        run: python3 scripts/release.py --notes "$RELEASE_TAG" --out notes.md
+
+      # Idempotent, so a re-run after a partial release updates the notes instead
+      # of failing because the release already exists.
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --notes-file notes.md
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --notes-file notes.md \
+              --verify-tag
+          fi
