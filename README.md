@@ -1003,12 +1003,14 @@ Every number here is a criterion median from `cargo bench` on one 4-core AMD
 EPYC 9B14 container, rustc 1.99.1, and each table names the bench group it came
 from. Treat them as orders of magnitude, not absolutes: the single-thread
 numbers are stable, the multi-threaded ones move between runs, and the *ranking*
-is the finding rather than any last digit. The multi-threaded benches
-(`contention`, `retry`, `readonly`) are self-checking - the counter is read
-before and after and a lost update fails the run - so a wrong cell is caught,
-not merely timed. The single-thread benches have no such guard; there the
-numbers are only as good as the harness, and the caveats below record where it
-misled.
+is the finding rather than any last digit. The multi-threaded benches check
+themselves, though not all the same way. The `borrow_lite` and lock arms of
+`contention` and `retry` read the counter before and after and fail the run on a
+lost update; `readonly` asserts that no read was refused and that the read sums
+match. The `AtomicU64` baseline in `contention` is the exception - it returns its
+final count without an expected value. The single-thread benches have no such
+guard; there the numbers are only as good as the harness, and the caveats below
+record where it misled.
 
 ### What a borrow costs
 
