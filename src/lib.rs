@@ -178,7 +178,7 @@
 //! |---|---|---|
 //! | `diagnostics` | yes | Records where every borrow happened, so [`Conflict`] and the panicking messages can name the borrow that is in the way and the borrow that was refused. Turning it off drops the holder from the single-threaded cell, so `Inline<u64>` is the same size as `RefCell<u64>` (16 bytes) and a borrow costs what `RefCell`'s does. |
 //! | `std` | no | `wait` and `retry`: the single step to take between attempts, and a bounded retry loop built on it. `std::thread::yield_now` needs `std`, which is why they are gated. |
-//! | `derive` | no | `#[derive(Cell)]`, the one-name alternative to the [`cell!`] macro. The only feature that adds a dependency (a proc-macro crate). |
+//! | `derive` | no | `#[derive(Cell)]`, the one-name alternative to the [`cell!`] macro. Pulls in a proc-macro crate. |
 //! | `paste` | no | Lets [`cell!`] derive a setter name from the field name (`count` -> `count_mut`) instead of spelling it out. Pulls in `paste`. |
 //! | `unsafe-unchecked` | no | `Unchecked`, a cell with no borrow flags at all, for a caller that has proven no other borrow can exist. |
 //!

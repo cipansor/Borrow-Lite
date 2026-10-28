@@ -63,8 +63,8 @@ The default build is `no_std` plus `alloc`, has no dependencies, and turns on
 |---|---|---|
 | `diagnostics` | yes | Records where every borrow happened, so a conflict can name the borrow that is in the way and the borrow that was refused. Turning it off makes `Inline<u64>` the same size as `RefCell<u64>` (16 bytes). |
 | `std` | no | The `wait` and `retry` helpers. `std::thread::yield_now` needs `std`, which is why they are gated. |
-| `derive` | no | `#[derive(Cell)]`, the one-name alternative to the `cell!` macro. The only feature that adds a dependency. |
-| `paste` | no | Lets `cell!` derive a setter name from the field name (`count` -> `count_mut`). |
+| `derive` | no | `#[derive(Cell)]`, the one-name alternative to the `cell!` macro. Pulls in a proc-macro crate. |
+| `paste` | no | Lets `cell!` derive a setter name from the field name (`count` -> `count_mut`). Pulls in `paste`. |
 | `unsafe-unchecked` | no | `Unchecked`, a cell with no borrow flags at all, for a caller that has proven no other borrow can exist. |
 
 MSRV is Rust 1.85 (edition 2024), and the `no_std` build and the MSRV are both
