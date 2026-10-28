@@ -1003,9 +1003,12 @@ Every number here is a criterion median from `cargo bench` on one 4-core AMD
 EPYC 9B14 container, rustc 1.99.1, and each table names the bench group it came
 from. Treat them as orders of magnitude, not absolutes: the single-thread
 numbers are stable, the multi-threaded ones move between runs, and the *ranking*
-is the finding rather than any last digit. Every benchmark is self-checking - the
-counter is read before and after and a lost update fails the run - so a wrong
-cell is caught, not merely timed.
+is the finding rather than any last digit. The multi-threaded benches
+(`contention`, `retry`, `readonly`) are self-checking - the counter is read
+before and after and a lost update fails the run - so a wrong cell is caught,
+not merely timed. The single-thread benches have no such guard; there the
+numbers are only as good as the harness, and the caveats below record where it
+misled.
 
 ### What a borrow costs
 
