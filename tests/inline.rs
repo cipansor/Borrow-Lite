@@ -364,19 +364,23 @@ fn swap_and_replace_with_match_refcell() {
 
 // `Inline::new` and `inline()` are `const`, so an inline cell can be built at
 // compile time. The case that needs it is a large value in a `const`-initialised
-// `thread_local!` (or a `static`): a lazy initialiser would build the whole
-// value as a stack temporary first and copy it into the thread-local slot, which
+// `thread_local!`: a lazy initialiser runs at first use and builds the whole
+// value as a stack temporary before copying it into the thread-local slot, which
 // overflows a small thread stack for a multi-megabyte arena. A `const`
-// initialiser stores it in place instead.
+// initialiser stores the value in place instead.
+//
+// The primary guarantee is at compile time: `const { Inline::new(..) }` only
+// compiles if `Inline::new` is a `const fn`, so a regression to a runtime
+// constructor is a build error, not a silent behaviour change. The small-stack
+// thread below is the runtime backstop - it turns "the arena was built on the
+// stack at first use" into a visible overflow, which a plain 2 MB test thread
+// would not, since a 1 MiB temporary still fits there.
 //
 // `thread_local!` is used rather than a bare `static` because `Inline` is
 // `!Sync`; that is the shape a per-thread arena actually takes.
 mod const_init {
     use borrow_lite::{Inline, inline};
 
-    // Big enough that the lazy-initialiser form would not fit a 2 MB test
-    // thread's stack, so this test would abort rather than fail if the `const`
-    // path regressed to a runtime one.
     const WORDS: usize = 1 << 17; // 1 MiB
 
     struct Arena {
@@ -396,10 +400,20 @@ mod const_init {
 
     #[test]
     fn a_large_value_can_be_const_initialised() {
-        ARENA.with(|cell| {
-            cell.with_mut(|arena| arena.words[0] = 42);
-            assert_eq!(cell.with(|arena| arena.words[0]), 42);
-        });
+        // 256 KiB of stack against a 1 MiB arena: a lazy initialiser would
+        // overflow this thread before the first borrow, while the `const` path
+        // never puts the arena on the stack and so fits with room to spare.
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                ARENA.with(|cell| {
+                    cell.with_mut(|arena| arena.words[0] = 42);
+                    assert_eq!(cell.with(|arena| arena.words[0]), 42);
+                });
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
