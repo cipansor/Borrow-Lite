@@ -47,14 +47,37 @@ unsafe impl<T: ?Sized + Send, S: State + Send> Send for Inner<T, S> {}
 // dropped on another thread, which is exactly what `!Send` forbids.
 unsafe impl<T: ?Sized + Send + Sync, S: State + Sync> Sync for Inner<T, S> {}
 
-impl<T, S: State> Inner<T, S> {
-    pub(crate) fn new_in(value: T) -> Self {
+impl<T> Inner<T, LocalState> {
+    /// Build an inline cell, usable in a `const` context.
+    ///
+    /// `const` on purpose: the single-threaded flags are a plain `Cell` that
+    /// [`LocalState::unborrowed`] can build at compile time, so
+    /// [`Inline::new`](crate::Inline::new) can too. That is what lets an
+    /// `Inline` cell sit in a `const`-initialised `thread_local!` without
+    /// materialising the whole value on the stack first - the shape a large
+    /// per-thread arena wants (see the note on `Inline::new`).
+    pub(crate) const fn new_local(value: T) -> Self {
         Self {
-            state: S::new(),
+            state: LocalState::unborrowed(),
             value: UnsafeCell::new(value),
         }
     }
+}
 
+impl<T> Inner<T, AtomicState> {
+    /// Build an atomic cell. Not `const`: the flags are atomics, and the
+    /// `loom` build swaps in loom's instrumented atomics, which cannot be built
+    /// in a const context. Nothing needs this to be `const` either - a `Shared`
+    /// cell is always behind an `Arc`, so it is never `const`-constructed.
+    pub(crate) fn new_atomic(value: T) -> Self {
+        Self {
+            state: AtomicState::unborrowed(),
+            value: UnsafeCell::new(value),
+        }
+    }
+}
+
+impl<T, S: State> Inner<T, S> {
     /// Consume the cell and hand back the value, with no borrow check.
     ///
     /// Only sound once the handle is uniquely owned, which is the caller's

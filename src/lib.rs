@@ -455,9 +455,28 @@ pub struct Inline<T: ?Sized>(Inner<T, state::LocalState>);
 
 impl<T> Inline<T> {
     /// Create a cell that stores `value` inline.
+    ///
+    /// `const`, so an `Inline` can be initialised at compile time - in a
+    /// `const` binding, or a `const`-initialised `thread_local!`:
+    ///
+    /// ```
+    /// use borrow_lite::Inline;
+    ///
+    /// // No runtime initialiser, so the value lives in the thread-local's own
+    /// // storage instead of being built as a stack temporary and copied in.
+    /// // That matters when the value is large: a lazy `thread_local!`
+    /// // initialiser for a multi-megabyte arena runs out of stack on a 2 MB
+    /// // test thread before the first borrow.
+    /// thread_local! {
+    ///     static COUNTER: Inline<u64> = const { Inline::new(0) };
+    /// }
+    ///
+    /// COUNTER.with(|c| c.with_mut(|n| *n += 1));
+    /// assert_eq!(COUNTER.with(|c| c.with(|n| *n)), 1);
+    /// ```
     #[must_use]
-    pub fn new(value: T) -> Self {
-        Self(Inner::new_in(value))
+    pub const fn new(value: T) -> Self {
+        Self(Inner::new_local(value))
     }
 
     /// Consume the cell and hand back the value.
@@ -617,7 +636,7 @@ impl<T> Local<T> {
     /// Create a single-threaded cell.
     #[must_use]
     pub fn new(value: T) -> Self {
-        Self(Rc::new(Inner::new_in(value)))
+        Self(Rc::new(Inner::new_local(value)))
     }
 }
 
@@ -698,7 +717,7 @@ impl<T> Shared<T> {
     /// Create a cell that can be shared between threads.
     #[must_use]
     pub fn new(value: T) -> Self {
-        Self(Arc::new(Inner::new_in(value)))
+        Self(Arc::new(Inner::new_atomic(value)))
     }
 }
 
@@ -1251,9 +1270,20 @@ impl<T: PartialOrd + Sync> PartialOrd<T> for Shared<T> {
 
 /// Create a cell that stores its value inline.
 ///
+/// `const`, like [`Inline::new`], so it can appear in a `const` initialiser:
+///
+/// ```
+/// use borrow_lite::{inline, Inline};
+///
+/// thread_local! {
+///     static CELL: Inline<u8> = const { inline(7) };
+/// }
+/// assert_eq!(CELL.with(|v| v.with(|n| *n)), 7);
+/// ```
+///
 /// Equivalent to [`Inline::new`].
 #[must_use]
-pub fn inline<T>(value: T) -> Inline<T> {
+pub const fn inline<T>(value: T) -> Inline<T> {
     Inline::new(value)
 }
 

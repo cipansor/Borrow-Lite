@@ -620,6 +620,38 @@ rather than a single flag. Turn the `diagnostics` feature off and it is the
 same 16 bytes as `RefCell<u64>`, at the cost of the located message. Fine for a
 struct; for a million-element array, use `Cell` or `RefCell`.
 
+`Inline::new` (and the `inline` helper) is `const`, so a cell can be built at
+compile time - in a `const` binding or a `const`-initialised `thread_local!`
+(a bare `static` is not on the list: `Inline` is `!Sync`):
+
+```rust
+use borrow_lite::Inline;
+
+struct Arena {
+    words: [u64; 1 << 16],
+}
+
+impl Arena {
+    const fn new() -> Self {
+        Self { words: [0; 1 << 16] }
+    }
+}
+
+thread_local! {
+    static ARENA: Inline<Arena> = const { Inline::new(Arena::new()) };
+}
+
+ARENA.with(|cell| cell.with_mut(|a| a.words[0] = 1));
+assert_eq!(ARENA.with(|cell| cell.with(|a| a.words[0])), 1);
+```
+
+The `const` matters for a large value. A `thread_local!` initialiser that runs
+at first use builds the whole value as a stack temporary before copying it into
+the thread-local slot, so a multi-megabyte arena overflows a small thread stack
+before the first borrow; a `const` initialiser stores the value in place and
+never touches the stack. `Local` and `Shared` are *not* `const`: they hold the
+cell behind an `Rc`/`Arc`, and that allocation is a runtime act.
+
 ### Threads
 
 ```rust
