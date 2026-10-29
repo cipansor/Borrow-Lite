@@ -361,3 +361,52 @@ fn swap_and_replace_with_match_refcell() {
     );
     assert_eq!(self_conflict.holder(), None, "a self-swap named a holder");
 }
+
+// `Inline::new` and `inline()` are `const`, so an inline cell can be built at
+// compile time. The case that needs it is a large value in a `const`-initialised
+// `thread_local!` (or a `static`): a lazy initialiser would build the whole
+// value as a stack temporary first and copy it into the thread-local slot, which
+// overflows a small thread stack for a multi-megabyte arena. A `const`
+// initialiser stores it in place instead.
+//
+// `thread_local!` is used rather than a bare `static` because `Inline` is
+// `!Sync`; that is the shape a per-thread arena actually takes.
+mod const_init {
+    use borrow_lite::{Inline, inline};
+
+    // Big enough that the lazy-initialiser form would not fit a 2 MB test
+    // thread's stack, so this test would abort rather than fail if the `const`
+    // path regressed to a runtime one.
+    const WORDS: usize = 1 << 17; // 1 MiB
+
+    struct Arena {
+        words: [u64; WORDS],
+    }
+
+    impl Arena {
+        const fn new() -> Self {
+            Self { words: [0; WORDS] }
+        }
+    }
+
+    thread_local! {
+        static ARENA: Inline<Arena> = const { Inline::new(Arena::new()) };
+        static COUNTER: Inline<u64> = const { inline(0) };
+    }
+
+    #[test]
+    fn a_large_value_can_be_const_initialised() {
+        ARENA.with(|cell| {
+            cell.with_mut(|arena| arena.words[0] = 42);
+            assert_eq!(cell.with(|arena| arena.words[0]), 42);
+        });
+    }
+
+    #[test]
+    fn the_const_helper_works_too() {
+        COUNTER.with(|cell| {
+            cell.with_mut(|n| *n += 1);
+            assert_eq!(cell.with(|n| *n), 1);
+        });
+    }
+}

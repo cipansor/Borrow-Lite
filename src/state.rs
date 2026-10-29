@@ -141,7 +141,12 @@ pub struct LocalState {
 }
 
 impl LocalState {
-    const fn unborrowed() -> Self {
+    /// The flags in their "nobody is borrowing" state, at compile time.
+    ///
+    /// `pub(crate)` rather than private so [`Inner::new_local`] can build an
+    /// [`Inline`](crate::Inline) cell in a `const` context: `inner` is a
+    /// different module, so a private item here is out of its reach.
+    pub(crate) const fn unborrowed() -> Self {
         Self {
             flags: Cell::new(0),
             #[cfg(feature = "diagnostics")]
@@ -287,8 +292,9 @@ pub struct AtomicState {
 
 impl AtomicState {
     // Not `const`: loom's atomics cannot be built in a const context, and
-    // nothing needs this to be const - it is only called from `State::new`.
-    fn unborrowed() -> Self {
+    // nothing needs this to be const - it is only called from `State::new`
+    // and `Inner::new_atomic`, both of which run at runtime.
+    pub(crate) fn unborrowed() -> Self {
         Self {
             shared: AtomicUsize::new(0),
             writer: AtomicPtr::new(core::ptr::null_mut()),
