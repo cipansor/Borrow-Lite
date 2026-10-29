@@ -84,9 +84,6 @@ fn add_atomic_reader(shared: &AtomicUsize) {
 ///
 /// [`Inner`]: crate::inner::Inner
 pub trait State: sealed::Sealed + 'static {
-    /// Create the flags in their "nobody is borrowing" state.
-    fn new() -> Self;
-
     /// Record a shared borrow, or explain why it is impossible.
     ///
     /// Returns `true` if *this* borrow is the one that recorded the holder, so
@@ -172,11 +169,6 @@ impl LocalState {
 impl sealed::Sealed for LocalState {}
 
 impl State for LocalState {
-    #[inline]
-    fn new() -> Self {
-        Self::unborrowed()
-    }
-
     #[inline]
     fn try_shared(&self, wanted: &'static Location<'static>) -> Result<bool, Conflict> {
         // One load of the flags, reused for the writer test and the increment,
@@ -292,8 +284,8 @@ pub struct AtomicState {
 
 impl AtomicState {
     // Not `const`: loom's atomics cannot be built in a const context, and
-    // nothing needs this to be const - it is only called from `State::new`
-    // and `Inner::new_atomic`, both of which run at runtime.
+    // nothing needs this to be const - it is only called from
+    // `Inner::new_atomic` (and the unit tests), which run at runtime.
     pub(crate) fn unborrowed() -> Self {
         Self {
             shared: AtomicUsize::new(0),
@@ -326,11 +318,6 @@ impl AtomicState {
 impl sealed::Sealed for AtomicState {}
 
 impl State for AtomicState {
-    #[inline]
-    fn new() -> Self {
-        Self::unborrowed()
-    }
-
     // ── Memory ordering, and why it is not weakened ────────────────────────
     //
     // The flag juggling below is the classic Dekker-style handshake between a
