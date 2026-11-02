@@ -62,41 +62,78 @@ def crates_from_tag(tag: str) -> tuple[str, str]:
     return match.group("crate"), match.group("version")
 
 
-def load_manifests() -> tuple[dict[str, dict], dict[str, Path]]:
+def _manifest_text(relpath: str, ref: str | None) -> str:
+    """A manifest's text, from the working tree or from a git ref.
+
+    `ref` is how a tag is checked against the manifest it was cut from rather
+    than the current one: a tag names a historical version, so the working-tree
+    manifest is the wrong thing to compare it against once the version has moved
+    on.
+    """
+    if ref is None:
+        return (ROOT / relpath).read_text()
+    result = subprocess.run(
+        ["git", "show", f"{ref}:{relpath}"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(f"`{relpath}` does not exist at `{ref}`")
+    return result.stdout
+
+
+def load_manifests(ref: str | None = None) -> tuple[dict[str, dict], dict[str, Path]]:
     """Return (crate name -> manifest, crate name -> directory).
 
     The root `Cargo.toml` is the `borrow_lite` package; `derive/` holds
     `borrow_lite_derive`. A workspace member whose directory does not exist is
     reported rather than skipped, so a renamed directory cannot silently shrink
     the set of releasable crates.
+
+    `ref` reads the manifests from a git ref instead of the working tree, so a
+    tag can be validated against the version it was actually cut from.
     """
-    root = tomllib.loads((ROOT / ROOT_MANIFEST).read_text())
+    root = tomllib.loads(_manifest_text(ROOT_MANIFEST, ref))
+    _resolve_inherited_version(root, root)
     manifests: dict[str, dict] = {root["package"]["name"]: root}
     dirs: dict[str, Path] = {root["package"]["name"]: ROOT}
 
     for member in root.get("workspace", {}).get("members", []):
-        path = ROOT / member / "Cargo.toml"
-        if not path.is_file():
-            raise ReleaseError(f"workspace member `{member}` has no Cargo.toml")
-        parsed = tomllib.loads(path.read_text())
+        relpath = f"{member}/Cargo.toml"
+        try:
+            parsed = tomllib.loads(_manifest_text(relpath, ref))
+        except (ReleaseError, FileNotFoundError) as error:
+            raise ReleaseError(
+                f"workspace member `{member}` has no Cargo.toml"
+            ) from error
         name = parsed["package"]["name"]
+        _resolve_inherited_version(parsed, root)
         manifests[name] = parsed
         dirs[name] = ROOT / member
     return manifests, dirs
 
 
+def _resolve_inherited_version(manifest: dict, root: dict) -> None:
+    """Write a concrete version where a manifest inherits `version.workspace`.
+
+    Resolved against `root` - the root manifest `load_manifests` read, from the
+    working tree or a given ref - rather than re-reading the working tree, so a
+    historical manifest resolves against its own root. A workspace version bump
+    would otherwise make every past tag disagree with the current root.
+    """
+    if not isinstance(manifest["package"]["version"], str):
+        manifest["package"]["version"] = root["workspace"]["package"]["version"]
+
+
 def version_of(manifest: dict) -> str:
     """The version a manifest declares.
 
-    Both crates state their own `version`. The `version.workspace = true` form is
-    resolved too, so a manifest that inherits a shared workspace version keeps
-    working.
+    `load_manifests` resolves `version.workspace = true` against the root it read
+    and writes the concrete string back, so this is a plain read: no filesystem
+    access, and a historical tag cannot pick up the current version by accident.
     """
-    field = manifest["package"]["version"]
-    if isinstance(field, str):
-        return field
-    workspace = tomllib.loads((ROOT / ROOT_MANIFEST).read_text())
-    return workspace["workspace"]["package"]["version"]
+    return manifest["package"]["version"]
 
 
 def check_tag(
