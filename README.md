@@ -1696,11 +1696,13 @@ A few things worth knowing:
   change that breaks the generated code needs a matching `borrow_lite` bump.
 - **Re-runs are safe.** A version already on crates.io is reported and skipped,
   so a `workflow_dispatch` run finishes whatever a partial release left.
-- **One run, one commit.** The workflow pins the commit before building: the
-  tag's commit when the tag exists, otherwise the commit the dispatch ran on,
-  where the tag is then created. The checks, the upload, the tag and the GitHub
-  release therefore all name the same commit, whichever branch a dispatch was
-  started from.
+- **One run, one commit.** A run releases the commit it runs on, and the tag
+  must name that commit. A tag push always does. A `workflow_dispatch` for a tag
+  that already exists must be started from that tag (*Run workflow* -> *Use
+  workflow from* -> the tag); started from a branch, it stops before building
+  and says so. A dispatch for a tag that does not exist yet creates it on the
+  commit it ran on. The checks, the upload, the tag and the GitHub release
+  therefore always name the same commit.
 - **`v0.1.0` is the one legacy tag.** Both crates were first released under that
   single tag, before this scheme existed. It is still the baseline the first
   per-crate release is compared against, and it is never published again.

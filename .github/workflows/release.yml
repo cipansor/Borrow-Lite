@@ -12,13 +12,21 @@ name: Release
 # tag as an input. A crate whose version is already on crates.io is reported and
 # skipped rather than failing the run, so a second run finishes the rest.
 #
-# Whatever started the run, one commit is released, and the `resolve` job pins it
-# before anything is built: the tag's commit when the tag exists, otherwise the
-# commit the dispatch ran on, which is then where the tag is created. Without the
-# pin a dispatch built and published the *branch* it was started from - not the
-# tag it named - and `gh release create` then put a new tag on the default
-# branch's head, so the crate on crates.io, the tag and the GitHub release could
-# name three different commits.
+# A run releases exactly one commit: the one it runs on (`github.sha`). Every job
+# checks out that commit and nothing else, and the release's tag must name it:
+#
+# * a tag push runs on the tag, so it always does;
+# * a dispatch for a tag that already exists must be started *from that tag*
+#   ("Use workflow from" -> the tag). Started from anywhere else, the
+#   `same-commit` job stops the run before anything is built, rather than test
+#   and publish a branch head under a tag that names a different commit;
+# * a dispatch for a tag that does not exist yet releases the commit it ran on,
+#   and the GitHub release step creates the tag on that same commit.
+#
+# The jobs deliberately never check out a computed ref (a `ref:` set from an
+# expression). Code scanning cannot tell a commit SHA handed over from another
+# job apart from an untrusted pull-request head, and flags every step that runs
+# code after such a checkout as cache poisoning in the default branch's context.
 #
 # A push carrying several tags starts this workflow ONCE, for one of them, not
 # once per tag. Push one tag at a time.
@@ -46,31 +54,30 @@ permissions:
   contents: read
 
 jobs:
-  # Decide which commit this run releases, once, so `verify` tests and `publish`
-  # uploads the same tree. Full history so every tag is present to look up.
-  resolve:
+  # Refuse a run whose commit is not the one the tag names, before anything is
+  # built. Full history so every tag is present to look up.
+  same-commit:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    outputs:
-      sha: ${{ steps.pin.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Pin the commit to release
-        id: pin
+      - name: Check the tag names the commit this run releases
         run: |
           set -euo pipefail
-          if sha=$(git rev-parse --verify --quiet "refs/tags/$RELEASE_TAG^{commit}"); then
-            echo "releasing $RELEASE_TAG at its tagged commit $sha"
+          if tagged=$(git rev-parse --verify --quiet "refs/tags/$RELEASE_TAG^{commit}"); then
+            if [ "$tagged" != "$GITHUB_SHA" ]; then
+              echo "::error::$RELEASE_TAG names $tagged, but this run is on $GITHUB_SHA ($GITHUB_REF_NAME). Start the workflow from the tag itself (Run workflow -> Use workflow from -> $RELEASE_TAG) so the tagged commit is what gets tested and published."
+              exit 1
+            fi
+            echo "releasing $RELEASE_TAG at its tagged commit $GITHUB_SHA"
           else
             # Only a dispatch can get here: a tag push always has its tag.
-            sha=$(git rev-parse --verify HEAD)
-            echo "$RELEASE_TAG does not exist yet; releasing $GITHUB_REF_NAME at $sha, where the tag will be created"
+            echo "$RELEASE_TAG does not exist yet; releasing $GITHUB_REF_NAME at $GITHUB_SHA, where the tag will be created"
           fi
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
   # A tag is a promise that the code works, so gate the publish on the checks CI
   # runs. This job is the only thing standing between a bad commit and an upload
@@ -81,14 +88,13 @@ jobs:
   # wait in front of every release. The subset here is the part that catches a
   # broken build in minutes.
   verify:
-    needs: resolve
+    needs: same-commit
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ needs.resolve.outputs.sha }}
           persist-credentials: false
 
       # First, before the toolchain, so a wrong tag fails in seconds instead of
@@ -106,7 +112,7 @@ jobs:
           components: clippy, rustfmt
       # No build cache here either, for the same reason as in `publish`: this job
       # is the gate in front of an upload that cannot be undone, so it builds the
-      # pinned commit from scratch rather than from output another run saved. A
+      # release commit from scratch rather than from output another run saved. A
       # restored `target/` that was poisoned could make a broken build pass the
       # gate. A cache that this job *wrote* would also be readable by later runs,
       # so build steps here must not be able to seed one. The cold build costs a
@@ -120,7 +126,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   publish:
-    needs: [resolve, verify]
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -137,7 +143,6 @@ jobs:
       # with `GH_TOKEN`.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ needs.resolve.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -259,19 +264,18 @@ jobs:
       # dispatch path `gh` creates the tag, and `--target` puts it on the commit
       # that was just published - without it `gh` would use the default
       # branch's head, which need not be that commit. (For an existing tag,
-      # `--target` is ignored and the tag is left where it is - which is the
-      # commit `resolve` pinned.)
+      # `--target` is ignored and the tag is left where it is - which
+      # `same-commit` has already checked is this run's commit.)
       - name: Create or update the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" --notes-file notes.md
           else
             gh release create "$RELEASE_TAG" \
-              --target "$RELEASE_SHA" \
+              --target "$GITHUB_SHA" \
               --title "$RELEASE_TAG" \
               --notes-file notes.md
           fi
