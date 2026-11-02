@@ -8,6 +8,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Nothing in CI writes to the repository, so the token gets read access only,
+# whatever the repository's default token permissions are.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -150,7 +155,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04 # nightly
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      - run: cargo install cargo-fuzz --locked
+      # Pinned like the actions above, so a new `cargo-fuzz` release cannot
+      # change what runs here without a commit that says so.
+      - run: cargo install cargo-fuzz --version 0.13.2 --locked
       - run: mkdir -p fuzz/corpus/borrow_ops && cargo fuzz run borrow_ops fuzz/corpus/borrow_ops fuzz/seeds/borrow_ops -- -max_total_time=120
       - run: mkdir -p fuzz/corpus/observers && cargo fuzz run observers fuzz/corpus/observers fuzz/seeds/observers -- -max_total_time=120
       - run: mkdir -p fuzz/corpus/snapshot && cargo fuzz run snapshot fuzz/corpus/snapshot fuzz/seeds/snapshot -- -max_total_time=120

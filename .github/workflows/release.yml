@@ -12,6 +12,14 @@ name: Release
 # tag as an input. A crate whose version is already on crates.io is reported and
 # skipped rather than failing the run, so a second run finishes the rest.
 #
+# Whatever started the run, one commit is released, and the `resolve` job pins it
+# before anything is built: the tag's commit when the tag exists, otherwise the
+# commit the dispatch ran on, which is then where the tag is created. Without the
+# pin a dispatch built and published the *branch* it was started from - not the
+# tag it named - and `gh release create` then put a new tag on the default
+# branch's head, so the crate on crates.io, the tag and the GitHub release could
+# name three different commits.
+#
 # A push carrying several tags starts this workflow ONCE, for one of them, not
 # once per tag. Push one tag at a time.
 on:
@@ -38,6 +46,32 @@ permissions:
   contents: read
 
 jobs:
+  # Decide which commit this run releases, once, so `verify` tests and `publish`
+  # uploads the same tree. Full history so every tag is present to look up.
+  resolve:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.pin.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin the commit to release
+        id: pin
+        run: |
+          set -euo pipefail
+          if sha=$(git rev-parse --verify --quiet "refs/tags/$RELEASE_TAG^{commit}"); then
+            echo "releasing $RELEASE_TAG at its tagged commit $sha"
+          else
+            # Only a dispatch can get here: a tag push always has its tag.
+            sha=$(git rev-parse --verify HEAD)
+            echo "$RELEASE_TAG does not exist yet; releasing $GITHUB_REF_NAME at $sha, where the tag will be created"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
   # A tag is a promise that the code works, so gate the publish on the checks CI
   # runs. This job is the only thing standing between a bad commit and an upload
   # that cannot be undone.
@@ -47,11 +81,15 @@ jobs:
   # wait in front of every release. The subset here is the part that catches a
   # broken build in minutes.
   verify:
+    needs: resolve
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
 
       # First, before the toolchain, so a wrong tag fails in seconds instead of
       # after the test suite. Reads the manifests with `tomllib`, no cargo.
@@ -76,7 +114,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   publish:
-    needs: verify
+    needs: [resolve, verify]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -85,11 +123,22 @@ jobs:
       # Full history, not the default shallow clone: the release notes are built
       # from `git log` over the crate's directory and from its previous tag, and
       # a shallow checkout would silently produce an empty range.
+      #
+      # `persist-credentials: false` because this job holds a `contents: write`
+      # token and `cargo publish` compiles the package - including dependency
+      # build scripts - which could otherwise read that token out of
+      # `.git/config`. Nothing here needs git credentials: `gh` authenticates
+      # with `GH_TOKEN`.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ needs.resolve.outputs.sha }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # No build cache in this job on purpose. It can mint a crates.io token and
+      # write to the repository, so it must not restore build output that
+      # another workflow run saved: a poisoned cache would be built into the
+      # upload. The cold build costs a minute or two once per release.
 
       # Trusted Publishing: the job presents a GitHub-signed OIDC token, and
       # crates.io returns a publish token valid for 30 minutes, revoked in this
@@ -200,16 +249,23 @@ jobs:
       # only accepts a tag that already exists on the remote, so a manual
       # `workflow_dispatch` for a tag that has not been pushed yet fails with
       # `aborting due to --verify-tag flag` - after the publish already happened.
-      # A tag push is the normal path and the tag is present there; on the
-      # dispatch path `gh` creates the tag at the checked-out commit instead.
+      # A tag push is the normal path and the tag is present there. On the
+      # dispatch path `gh` creates the tag, and `--target` puts it on the commit
+      # that was just published - without it `gh` would use the default
+      # branch's head, which need not be that commit. (For an existing tag,
+      # `--target` is ignored and the tag is left where it is - which is the
+      # commit `resolve` pinned.)
       - name: Create or update the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" --notes-file notes.md
           else
             gh release create "$RELEASE_TAG" \
+              --target "$RELEASE_SHA" \
               --title "$RELEASE_TAG" \
               --notes-file notes.md
           fi
