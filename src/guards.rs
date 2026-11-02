@@ -154,10 +154,38 @@ impl<T: ?Sized, S: State> Clone for ReadGuard<'_, T, S> {
 ///
 /// Created by [`borrow_mut`](crate::Inner::borrow_mut) and friends; derefs to
 /// `&mut T` and releases the borrow when dropped.
+///
+/// The guard is *invariant* in `T`, like `&mut T` and
+/// [`RefMut`](core::cell::RefMut). A covariant write guard would let a
+/// `WriteGuard<&'static str>` be shortened to a `WriteGuard<&'short str>`, store
+/// a short-lived reference through it, and leave the cell - still typed
+/// `&'static str` - pointing at freed memory once the guard is gone:
+///
+/// ```compile_fail
+/// use borrow_lite::{Local, WriteGuard};
+/// use borrow_lite::state::LocalState;
+///
+/// fn shorten<'g, 's>(
+///     guard: WriteGuard<'g, &'static str, LocalState>,
+/// ) -> WriteGuard<'g, &'s str, LocalState> {
+///     guard // error: `WriteGuard` is invariant in `T`
+/// }
+///
+/// let cell: Local<&'static str> = Local::new("static");
+/// {
+///     let owned = String::from("short-lived");
+///     *shorten(cell.borrow_mut()) = owned.as_str();
+/// }
+/// println!("{}", cell.get()); // would read the freed `String`
+/// ```
 #[must_use = "a guard that is dropped immediately borrows nothing"]
 pub struct WriteGuard<'a, T: ?Sized, S: State> {
     state: &'a S,
     ptr: NonNull<T>,
+    /// `NonNull<T>` alone is covariant in `T`, which is right for a read guard
+    /// and unsound for a write guard (see the type docs). This marker makes the
+    /// guard behave like the `&'a mut T` it stands for: invariant in `T`.
+    _invariant: PhantomData<&'a mut T>,
     _not_send: PhantomData<*const ()>,
 }
 
@@ -169,6 +197,7 @@ impl<'a, T: ?Sized, S: State> WriteGuard<'a, T, S> {
         Self {
             state,
             ptr,
+            _invariant: PhantomData,
             _not_send: PhantomData,
         }
     }
@@ -202,6 +231,7 @@ impl<'a, T: ?Sized, S: State> WriteGuard<'a, T, S> {
             state,
             // SAFETY: as above; `mapped` cannot be null because it is a reference.
             ptr: unsafe { NonNull::new_unchecked(mapped) },
+            _invariant: PhantomData,
             _not_send: PhantomData,
         }
     }
