@@ -23,6 +23,20 @@ name: Release
 # * a dispatch for a tag that does not exist yet releases the commit it ran on,
 #   and the GitHub release step creates the tag on that same commit.
 #
+# `same-commit` only looks at the tag once, at the start, and a tag can appear
+# after that - pushed by a person, or created by another run. Three things close
+# that window:
+#
+# * runs for the same tag are serialised (`concurrency` below), so two runs can
+#   never race each other to create the tag or publish the crate;
+# * `publish` asks the remote for the tag again right before the dry run, and
+#   stops if it now names a different commit - before anything is uploaded;
+# * after the GitHub release step, the tag the API reports must name this run's
+#   commit, or the step fails. `gh release create --target` silently keeps a tag
+#   that already exists, so without this check a tag created in the last
+#   moments could leave the tag and the release on a different commit from the
+#   crate without anyone noticing.
+#
 # The jobs deliberately never check out a computed ref (a `ref:` set from an
 # expression). Code scanning cannot tell a commit SHA handed over from another
 # job apart from an untrusted pull-request head, and flags every step that runs
@@ -52,6 +66,16 @@ env:
 # that job is for the GitHub release at the end.
 permissions:
   contents: read
+
+# One run per tag at a time. A tag push (`github.ref_name`) and a dispatch for
+# the same tag (`inputs.tag`) land in the same group, so they queue behind each
+# other instead of racing to publish the crate or create the tag. Nothing in
+# progress is cancelled - a publish cut off halfway is worse than a wait. (While
+# one run holds the group, GitHub keeps at most one more queued, and a newer
+# queued run replaces an older one.)
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   # Refuse a run whose commit is not the one the tag names, before anything is
@@ -188,6 +212,30 @@ jobs:
           echo "token=$token" >> "$GITHUB_OUTPUT"
           echo "authenticating with $source"
 
+      # `same-commit` checked the tag at the start of the run; it may have been
+      # created since, by a person or another run. Ask the remote again now, the
+      # last moment before anything is uploaded. An annotated tag is listed twice
+      # - the tag object, then `^{}` peeled to its commit - and `ls-remote` sorts
+      # the peeled line last, so the last SHA is the commit either way. No output
+      # means the tag still does not exist, which is the dispatch path that
+      # creates it on this commit. `ls-remote` runs without credentials
+      # (`persist-credentials: false`), which works because the repository is
+      # public; on a private one it would fail, and so stop the release, rather
+      # than skip the check.
+      - name: Re-check the tag right before publishing
+        run: |
+          set -euo pipefail
+          tagged=$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG^{}" "refs/tags/$RELEASE_TAG" | tail -n 1 | cut -f1)
+          if [ -n "$tagged" ] && [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::$RELEASE_TAG now names $tagged, but this run is releasing $GITHUB_SHA. The tag changed after the run started; nothing was published. Start the workflow again from the tag itself."
+            exit 1
+          fi
+          if [ -n "$tagged" ]; then
+            echo "$RELEASE_TAG still names $GITHUB_SHA"
+          else
+            echo "$RELEASE_TAG does not exist yet; it will be created on $GITHUB_SHA"
+          fi
+
       # An upload cannot be undone and the same version cannot be published
       # twice, so this catches a manifest or file-set problem while it is still
       # free. No `--strict`: a crate here that depends on the sibling is
@@ -263,14 +311,20 @@ jobs:
       # A tag push is the normal path and the tag is present there. On the
       # dispatch path `gh` creates the tag, and `--target` puts it on the commit
       # that was just published - without it `gh` would use the default
-      # branch's head, which need not be that commit. (For an existing tag,
-      # `--target` is ignored and the tag is left where it is - which
-      # `same-commit` has already checked is this run's commit.)
+      # branch's head, which need not be that commit.
+      #
+      # For a tag that already exists, `--target` is silently ignored and the tag
+      # stays where it is. `same-commit` and the re-check before publishing have
+      # both confirmed it named this run's commit, but a tag created between that
+      # re-check and this step would slip through unnoticed. So after creating or
+      # updating the release, ask the API which commit the tag names, and fail
+      # the step if it is not the one that was published.
       - name: Create or update the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" --notes-file notes.md
           else
@@ -279,3 +333,10 @@ jobs:
               --title "$RELEASE_TAG" \
               --notes-file notes.md
           fi
+
+          tagged=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
+          if [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::$RELEASE_TAG names $tagged, but this run published $GITHUB_SHA. The tag and the GitHub release do not match the crate on crates.io; move the tag to $GITHUB_SHA or investigate before announcing the release."
+            exit 1
+          fi
+          echo "$RELEASE_TAG, the GitHub release and the published crate all name $GITHUB_SHA"
