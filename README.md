@@ -822,14 +822,24 @@ It generates `StatsCell` beside `Stats` (the value struct stays the value), with
 the same `field()`/`field_mut()` surface and the same cost. Off by default: it
 pulls in a proc-macro crate, and the default build is dependency-free.
 
-The handle is exactly what `cell!` produces, so the same three rules apply:
+The handle is exactly what `cell!` produces, so the same rules apply:
 
-- its `Clone` clones the *cell*, not the value, so the value does not need to be
-  `Clone` - and the generated impl carries no bound that would demand it;
+- for `local` and `shared`, its `Clone` clones the *cell* (an `Rc`/`Arc` bump),
+  not the value, so the value does not need to be `Clone` - and the generated
+  impl carries no bound that would demand it. An `inline` handle owns its
+  value, so cloning it copies the value, and it is `Clone` exactly when the
+  value is;
 - it `Deref`s to the cell, so the whole-cell API (`with`, `borrow`, `try_with`,
   the operators) is reachable;
 - it inherits the visibility of the value struct, so a private struct gets a
   private handle rather than one that leaks the value through `Deref::Target`.
+
+It also never grants more than the struct itself does. Each `field()` /
+`field_mut()` accessor has *its field's* visibility, so a private field stays
+private to the struct's module, and `new` is only as visible as a struct
+literal of the value would be (private when the fields' visibilities differ).
+A struct that keeps an invariant by keeping a field private keeps it with the
+derive too. A `where` clause on the struct is carried onto the handle.
 
 ### `unsafe-unchecked`: no check, no flag
 
