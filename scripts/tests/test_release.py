@@ -129,7 +129,9 @@ class TagDoesNotDrift(unittest.TestCase):
     def test_every_tag_shaped_ref_here_resolves(self):
         # Catches a tag created for a crate or version this repository does not
         # have, which is the mistake the workflow would refuse at release time.
-        manifests, dirs = release.load_manifests()
+        # Each tag is checked against the manifest at that tag's own commit: a
+        # tag names a historical version, so the current manifest is the wrong
+        # thing to compare it against once the version has moved on.
         tags = subprocess.run(
             ["git", "tag", "-l"],
             cwd=release.ROOT,
@@ -140,7 +142,28 @@ class TagDoesNotDrift(unittest.TestCase):
         for tag in tags:
             if tag.startswith("v"):
                 continue
+            manifests, dirs = release.load_manifests(ref=tag)
             release.check_tag(tag, manifests, dirs)
+
+    def test_a_tag_is_read_from_its_own_commit(self):
+        # The bug this pins: a tag checked against the *current* manifest looks
+        # right until the version moves on, then fails - so every past release
+        # breaks the guard the moment the next one is prepared. Reading the
+        # manifest at the tag's own commit keeps it correct forever.
+        tags = subprocess.run(
+            ["git", "tag", "-l"],
+            cwd=release.ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        crate_tags = [tag for tag in tags if not tag.startswith("v")]
+        if not crate_tags:
+            self.skipTest("no per-crate tags in this checkout")
+        for tag in crate_tags:
+            crate, tag_version = release.crates_from_tag(tag)
+            manifests, _ = release.load_manifests(ref=tag)
+            self.assertEqual(release.version_of(manifests[crate]), tag_version)
 
 
 if __name__ == "__main__":

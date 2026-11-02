@@ -62,23 +62,48 @@ def crates_from_tag(tag: str) -> tuple[str, str]:
     return match.group("crate"), match.group("version")
 
 
-def load_manifests() -> tuple[dict[str, dict], dict[str, Path]]:
+def _manifest_text(relpath: str, ref: str | None) -> str:
+    """A manifest's text, from the working tree or from a git ref.
+
+    `ref` is how a tag is checked against the manifest it was cut from rather
+    than the current one: a tag names a historical version, so the working-tree
+    manifest is the wrong thing to compare it against once the version has moved
+    on.
+    """
+    if ref is None:
+        return (ROOT / relpath).read_text()
+    result = subprocess.run(
+        ["git", "show", f"{ref}:{relpath}"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseError(f"`{relpath}` does not exist at `{ref}`")
+    return result.stdout
+
+
+def load_manifests(ref: str | None = None) -> tuple[dict[str, dict], dict[str, Path]]:
     """Return (crate name -> manifest, crate name -> directory).
 
     The root `Cargo.toml` is the `borrow_lite` package; `derive/` holds
     `borrow_lite_derive`. A workspace member whose directory does not exist is
     reported rather than skipped, so a renamed directory cannot silently shrink
     the set of releasable crates.
+
+    `ref` reads the manifests from a git ref instead of the working tree, so a
+    tag can be validated against the version it was actually cut from.
     """
-    root = tomllib.loads((ROOT / ROOT_MANIFEST).read_text())
+    root = tomllib.loads(_manifest_text(ROOT_MANIFEST, ref))
     manifests: dict[str, dict] = {root["package"]["name"]: root}
     dirs: dict[str, Path] = {root["package"]["name"]: ROOT}
 
     for member in root.get("workspace", {}).get("members", []):
-        path = ROOT / member / "Cargo.toml"
-        if not path.is_file():
+        relpath = f"{member}/Cargo.toml"
+        try:
+            parsed = tomllib.loads(_manifest_text(relpath, ref))
+        except ReleaseError:
             raise ReleaseError(f"workspace member `{member}` has no Cargo.toml")
-        parsed = tomllib.loads(path.read_text())
         name = parsed["package"]["name"]
         manifests[name] = parsed
         dirs[name] = ROOT / member
