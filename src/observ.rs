@@ -826,10 +826,19 @@ impl<T> Drop for Restore<'_, T> {
             // not the round in flight; drop everything that was subscribed when
             // it was requested.
             let boundary = subs.clear_before.take();
-            let (kept, removed): (Vec<_>, Vec<_>) = all.into_iter().partition(|(id, _)| {
-                !pending.contains(id) && boundary.is_none_or(|boundary| *id >= boundary)
-            });
-            subs.observers = kept;
+            // Only split the list when something is leaving it. The common
+            // notification removes nothing, and must not allocate for it:
+            // `tests/allocations.rs` pins the steady-state cost of an update.
+            let removed = if pending.is_empty() && boundary.is_none() {
+                Vec::new()
+            } else {
+                let (kept, removed): (Vec<_>, Vec<_>) = all.into_iter().partition(|(id, _)| {
+                    !pending.contains(id) && boundary.is_none_or(|boundary| *id >= boundary)
+                });
+                all = kept;
+                removed
+            };
+            subs.observers = all;
             subs.in_flight.clear();
             subs.notifying = false;
             removed
