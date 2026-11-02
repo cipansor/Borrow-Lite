@@ -822,14 +822,24 @@ It generates `StatsCell` beside `Stats` (the value struct stays the value), with
 the same `field()`/`field_mut()` surface and the same cost. Off by default: it
 pulls in a proc-macro crate, and the default build is dependency-free.
 
-The handle is exactly what `cell!` produces, so the same three rules apply:
+The handle is exactly what `cell!` produces, so the same rules apply:
 
-- its `Clone` clones the *cell*, not the value, so the value does not need to be
-  `Clone` - and the generated impl carries no bound that would demand it;
+- for `local` and `shared`, its `Clone` clones the *cell* (an `Rc`/`Arc` bump),
+  not the value, so the value does not need to be `Clone` - and the generated
+  impl carries no bound that would demand it. An `inline` handle owns its
+  value, so cloning it copies the value, and it is `Clone` exactly when the
+  value is;
 - it `Deref`s to the cell, so the whole-cell API (`with`, `borrow`, `try_with`,
   the operators) is reachable;
 - it inherits the visibility of the value struct, so a private struct gets a
   private handle rather than one that leaks the value through `Deref::Target`.
+
+It also never grants more than the struct itself does. Each `field()` /
+`field_mut()` accessor has *its field's* visibility, so a private field stays
+private to the struct's module, and `new` is only as visible as a struct
+literal of the value would be (private when the fields' visibilities differ).
+A struct that keeps an invariant by keeping a field private keeps it with the
+derive too. A `where` clause on the struct is carried onto the handle.
 
 ### `unsafe-unchecked`: no check, no flag
 
@@ -1686,6 +1696,13 @@ A few things worth knowing:
   change that breaks the generated code needs a matching `borrow_lite` bump.
 - **Re-runs are safe.** A version already on crates.io is reported and skipped,
   so a `workflow_dispatch` run finishes whatever a partial release left.
+- **One run, one commit.** A run releases the commit it runs on, and the tag
+  must name that commit. A tag push always does. A `workflow_dispatch` for a tag
+  that already exists must be started from that tag (*Run workflow* -> *Use
+  workflow from* -> the tag); started from a branch, it stops before building
+  and says so. A dispatch for a tag that does not exist yet creates it on the
+  commit it ran on. The checks, the upload, the tag and the GitHub release
+  therefore always name the same commit.
 - **`v0.1.0` is the one legacy tag.** Both crates were first released under that
   single tag, before this scheme existed. It is still the baseline the first
   per-crate release is compared against, and it is never published again.

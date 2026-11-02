@@ -194,12 +194,17 @@ impl<T> Observable<T> {
     /// This may be called from inside an observer, including to remove the
     /// running observer itself; the removal is queued and applied when the
     /// notification finishes, so the list is never mutated underneath it.
+    ///
+    /// The removed observer is dropped after the observer list is released, so
+    /// a value it captured may touch this `Observable` from its `Drop`.
     #[must_use]
     pub fn unobserve(&self, id: ObserverId) -> bool {
-        self.subs.with_mut(|subs| {
+        // The removed observer is carried out of `with_mut` and dropped when
+        // this function returns, after the list's borrow has ended.
+        let (known, _removed) = self.subs.with_mut(|subs| {
             if subs.notifying {
                 if subs.pending_removal.contains(&id) {
-                    return false;
+                    return (false, None);
                 }
                 // The observer may still be in the list, or in the guard's
                 // hands (the round in progress and the rounds already run). An
@@ -207,15 +212,20 @@ impl<T> Observable<T> {
                 let registered = subs.observers.iter().any(|(oid, _)| *oid == id)
                     || subs.in_flight.contains(&id);
                 if !registered {
-                    return false;
+                    return (false, None);
                 }
                 subs.pending_removal.push(id);
-                return true;
+                return (true, None);
             }
-            let before = subs.observers.len();
-            subs.observers.retain(|(observer_id, _)| *observer_id != id);
-            subs.observers.len() != before
-        })
+            // Ids are unique, so there is at most one entry to take out. It is
+            // moved out rather than dropped in place: its destructor must not
+            // run while the list is borrowed.
+            match subs.observers.iter().position(|(oid, _)| *oid == id) {
+                Some(index) => (true, Some(subs.observers.remove(index))),
+                None => (false, None),
+            }
+        });
+        known
     }
 
     /// How many observers are subscribed.
@@ -267,6 +277,9 @@ impl<T> Observable<T> {
     /// are kept, so the "observers added during a notification still see the
     /// value" rule is not broken.
     ///
+    /// The closures are dropped after the observer list is released, so a value
+    /// one of them captured may touch this `Observable` from its `Drop`.
+    ///
     /// ```
     /// use borrow_lite::Observable;
     ///
@@ -292,8 +305,11 @@ impl<T> Observable<T> {
     /// assert_eq!(ran.with(|r| r.clone()), vec![1, 2]);
     /// ```
     pub fn clear_observers(&self) {
-        self.subs.with_mut(|subs| {
-            subs.observers.clear();
+        // The closures are moved out and dropped after `with_mut` returns, not
+        // cleared in place: a value an observer captured may touch this
+        // `Observable` from its `Drop`, and the list is borrowed in there.
+        let _dropped_after_release = self.subs.with_mut(|subs| {
+            let removed = core::mem::take(&mut subs.observers);
             subs.pending_removal.clear();
             if subs.notifying {
                 // The observers of the round in progress are not in the list
@@ -309,6 +325,7 @@ impl<T> Observable<T> {
                 // they are no longer registered, so they must not be counted.
                 subs.in_flight.clear();
             }
+            removed
         });
     }
 
@@ -793,25 +810,38 @@ impl<T> Drop for Restore<'_, T> {
         // The interrupted round comes before observers added during the
         // notification, matching the documented ordering.
         finished.append(&mut self.running);
-        self.subs.with_mut(|subs| {
+        // Observers that leave the list are collected here and dropped only
+        // after `with_mut` returns. Dropping them inside it would run their
+        // destructors while the list is exclusively borrowed, so a captured
+        // value whose `Drop` touches this `Observable` would panic - and this
+        // guard often runs during unwinding, where that panic is an abort.
+        let _dropped_after_release = self.subs.with_mut(|subs| {
             let mut all = finished;
             all.append(&mut subs.observers);
             // Observers added during the notification come after the ones that
             // were already there, and removals requested during it are applied
             // now that nothing is iterating over the list.
-            let removed = core::mem::take(&mut subs.pending_removal);
-            if !removed.is_empty() {
-                all.retain(|(id, _)| !removed.contains(id));
-            }
+            let pending = core::mem::take(&mut subs.pending_removal);
             // A `clear_observers` during the notification removed the list but
             // not the round in flight; drop everything that was subscribed when
             // it was requested.
-            if let Some(boundary) = subs.clear_before.take() {
-                all.retain(|(id, _)| *id >= boundary);
-            }
+            let boundary = subs.clear_before.take();
+            // Only split the list when something is leaving it. The common
+            // notification removes nothing, and must not allocate for it:
+            // `tests/allocations.rs` pins the steady-state cost of an update.
+            let removed = if pending.is_empty() && boundary.is_none() {
+                Vec::new()
+            } else {
+                let (kept, removed): (Vec<_>, Vec<_>) = all.into_iter().partition(|(id, _)| {
+                    !pending.contains(id) && boundary.is_none_or(|boundary| *id >= boundary)
+                });
+                all = kept;
+                removed
+            };
             subs.observers = all;
             subs.in_flight.clear();
             subs.notifying = false;
+            removed
         });
     }
 }

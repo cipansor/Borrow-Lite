@@ -258,6 +258,47 @@ pub use crate::wait::{retry, wait};
 /// Re-exported from `borrow_lite_derive` so the derive is available as
 /// `use borrow_lite::Cell;` rather than by depending on the macro crate
 /// directly. Only present with the `derive` feature.
+///
+/// The generated handle never grants more than the struct does. Each
+/// `field()`/`field_mut()` accessor has its field's visibility, so a private
+/// field stays private:
+///
+/// ```compile_fail,E0624
+/// mod bank {
+///     use borrow_lite::Cell;
+///
+///     #[derive(Cell)]
+///     #[cell(local)]
+///     pub struct Account {
+///         balance: u64, // private: only `bank` may change it
+///     }
+///
+///     pub fn open() -> AccountCell {
+///         AccountCell::new(100)
+///     }
+/// }
+///
+/// let account = bank::open();
+/// *account.balance_mut() = 1_000_000; // error[E0624]: method is private
+/// ```
+///
+/// and `new` is only as visible as a struct literal of the value, so a struct
+/// with a private field cannot be built with arbitrary values from outside:
+///
+/// ```compile_fail,E0624
+/// mod bank {
+///     use borrow_lite::Cell;
+///
+///     #[derive(Cell)]
+///     #[cell(local)]
+///     pub struct Account {
+///         pub owner: &'static str,
+///         balance: u64,
+///     }
+/// }
+///
+/// let forged = bank::AccountCell::new("me", 1_000_000); // error[E0624]
+/// ```
 #[cfg(feature = "derive")]
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use borrow_lite_derive::Cell;

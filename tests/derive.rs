@@ -81,14 +81,15 @@ fn the_derive_send_sync_matches_the_kind() {
     assert_send::<InlineFlagCell>();
 }
 
-/// The handle's `Clone` must not require the *value* to be `Clone`.
+/// A `shared`/`local` handle's `Clone` must not require the *value* to be
+/// `Clone`.
 ///
-/// Cloning a handle is an `Rc`/`Arc` bump - it never clones the value - so the
-/// generated impl carries no `where` bound on the input struct. A bound would
-/// make the handle un-clonable whenever the value is, which is not the
-/// contract, and for a concrete struct an unsatisfied `where` is a hard error
-/// rather than a latent one. This struct deliberately derives nothing but
-/// `Cell`, so the old bound would not compile.
+/// Cloning such a handle is an `Rc`/`Arc` bump - it never clones the value - so
+/// the generated impl carries no `where` bound on the input struct. A bound
+/// would make the handle un-clonable whenever the value is, which is not the
+/// contract. This struct deliberately derives nothing but `Cell`, so a bound
+/// would make the clone below fail to compile. (The `inline` kind is different:
+/// its handle owns the value - see the inline tests further down.)
 #[derive(Cell)]
 struct NotClone {
     value: u8,
@@ -114,4 +115,116 @@ struct NotDebug {
 fn the_derive_needs_no_debug_value() {
     let cell = NotDebugCell::new(7);
     assert_eq!(*cell.value(), 7);
+}
+
+// Each accessor takes its field's visibility, so a caller outside the struct's
+// module reaches the `pub` fields and nothing else. The private-field half is a
+// `compile_fail` doctest on the `Cell` re-export; this is the half that must
+// keep compiling.
+mod shop {
+    use borrow_lite::Cell;
+
+    /// An item with a public name and a price only `shop` may set.
+    #[derive(Cell)]
+    #[cell(local)]
+    pub struct Item {
+        /// Anyone may rename the item.
+        pub name: String,
+        price: u32,
+    }
+
+    impl ItemCell {
+        /// The module's own constructor, the only way to set a price.
+        pub fn priced(name: &str, price: u32) -> Self {
+            // `new` is private here (the fields' visibilities differ), but the
+            // struct's own module can still call it.
+            Self::new(String::from(name), price)
+        }
+
+        /// The module can still use the private field's accessor.
+        pub fn price_cents(&self) -> u32 {
+            *self.price() * 100
+        }
+    }
+}
+
+#[test]
+fn the_derive_accessors_follow_field_visibility() {
+    let item = shop::ItemCell::priced("tea", 3);
+    item.name_mut().push('!');
+    assert_eq!(item.name().as_str(), "tea!");
+    assert_eq!(item.price_cents(), 300);
+}
+
+/// A `where` clause on the value struct is carried onto the handle struct, so
+/// a value whose fields only make sense under the bound still derives.
+pub trait Unit {
+    /// How a value of this unit is stored.
+    type Repr;
+}
+
+impl Unit for u8 {
+    type Repr = u16;
+}
+
+/// A reading stored in the unit's representation.
+#[derive(Cell)]
+#[cell(local)]
+pub struct Meter<U>
+where
+    U: Unit,
+{
+    /// The stored reading.
+    pub raw: U::Repr,
+}
+
+#[test]
+fn the_derive_keeps_the_where_clause() {
+    let meter = MeterCell::<u8>::new(3);
+    *meter.raw_mut() += 1;
+    assert_eq!(*meter.raw(), 4);
+}
+
+/// An `inline` handle owns its value, so cloning it copies the value: the
+/// clone is a separate cell, not a second handle to the same one.
+#[test]
+fn the_derive_inline_clone_copies_the_value() {
+    let original = InlineFlagCell::new(false);
+    let copy = original.clone();
+    *copy.on_mut() = true;
+    assert!(!*original.on());
+    assert!(*copy.on());
+}
+
+/// ...which is why only the `inline` kind needs the value to be `Clone`. A
+/// non-`Clone` struct still derives an inline handle; that handle is simply
+/// not `Clone` (it used to fail to compile at all).
+#[derive(Cell)]
+#[cell(inline)]
+struct InlineNotClone {
+    value: u8,
+}
+
+#[test]
+fn the_derive_inline_does_not_need_a_clone_value() {
+    let cell = InlineNotCloneCell::new(1);
+    *cell.value_mut() += 1;
+    assert_eq!(*cell.value(), 2);
+}
+
+/// A generic inline value is cloneable exactly when the value is.
+#[derive(Clone, Cell)]
+#[cell(inline)]
+struct InlinePair<T> {
+    first: T,
+    second: T,
+}
+
+#[test]
+fn the_derive_inline_clone_follows_a_generic_value() {
+    let pair = InlinePairCell::new(String::from("a"), String::from("b"));
+    let copy = pair.clone();
+    copy.first_mut().push('!');
+    assert_eq!((pair.first().as_str(), copy.first().as_str()), ("a", "a!"));
+    assert_eq!(*copy.second(), "b");
 }

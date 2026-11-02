@@ -54,7 +54,12 @@ impl WriterLock {
         }
     }
 
-    fn lock(&self) {
+    /// Take the lock, spinning until it is free.
+    ///
+    /// The lock is released when the returned guard is dropped - including
+    /// during unwinding, so a panic in the critical section cannot leave it held
+    /// and turn every later [`Snapshot::store`] into an endless spin.
+    fn lock(&self) -> WriterLockGuard<'_> {
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -64,10 +69,18 @@ impl WriterLock {
                 spin_loop();
             }
         }
+        WriterLockGuard { lock: self }
     }
+}
 
-    fn unlock(&self) {
-        self.locked.store(false, Ordering::Release);
+/// Holds a [`WriterLock`] and releases it on drop.
+struct WriterLockGuard<'a> {
+    lock: &'a WriterLock,
+}
+
+impl Drop for WriterLockGuard<'_> {
+    fn drop(&mut self) {
+        self.lock.locked.store(false, Ordering::Release);
     }
 }
 
@@ -247,15 +260,26 @@ impl<T> Snapshot<T> {
     /// assert_eq!(*cell.load(), 3);
     /// ```
     pub fn store(&self, value: T) {
-        let raw = Box::into_raw(Box::new(value));
-        self.lock.lock();
+        // Allocate before taking the lock, so the critical section stays short.
+        let boxed = Box::new(value);
+        let _locked = self.lock.lock();
         // SAFETY: the writer lock is held, so no other writer is touching
-        // `retired`. Recording the pointer before publishing it means a reader
-        // that observes the new pointer is guaranteed to find the value in the
-        // list, and the reference it forms is valid.
-        unsafe { (*self.retired.get()).push(raw) };
+        // `retired`; readers never touch it, and `Drop`/`into_inner` need
+        // `self` by value or `&mut self`, so they cannot be running either.
+        let retired = unsafe { &mut *self.retired.get() };
+        // Make room *before* the box becomes a raw pointer. `reserve` is the
+        // one step here that can panic (capacity overflow); if it does, the
+        // value is still an ordinary `Box` and is dropped, and the guard
+        // releases the lock while unwinding. After it, `push` cannot reallocate
+        // and so cannot panic, which keeps "record the pointer, then publish
+        // it" all-or-nothing.
+        retired.reserve(1);
+        let raw = Box::into_raw(boxed);
+        // Recording the pointer before publishing it means a reader that
+        // observes the new pointer is guaranteed to find the value in the list,
+        // and the reference it forms is valid.
+        retired.push(raw);
         self.current.store(raw, Ordering::Release);
-        self.lock.unlock();
     }
 
     /// Consume the cell and return the current value.
@@ -301,5 +325,43 @@ impl<T> Deref for Snapshot<T> {
 impl<T: core::fmt::Debug> core::fmt::Debug for Snapshot<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         core::fmt::Debug::fmt(self.load(), f)
+    }
+}
+
+#[cfg(all(test, not(loom)))]
+mod tests {
+    use super::*;
+    extern crate std;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    /// A panic while the writer lock is held must release it. Before the lock
+    /// had a guard, a panic between `lock` and `unlock` left `locked` set, and
+    /// every later `store` spun forever.
+    #[test]
+    fn a_panic_while_the_writer_lock_is_held_releases_it() {
+        let lock = WriterLock::new();
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            let _locked = lock.lock();
+            panic!("boom inside the critical section");
+        }));
+        assert!(outcome.is_err(), "the panic should have propagated");
+        assert!(
+            !lock.locked.load(Ordering::Relaxed),
+            "the writer lock leaked on panic"
+        );
+        // Would spin forever if the lock had leaked.
+        drop(lock.lock());
+    }
+
+    /// The guard is the only unlock, so the ordinary path must still release.
+    #[test]
+    fn stores_in_sequence_take_and_release_the_lock() {
+        let cell = Snapshot::new(0u32);
+        for value in 1..=100 {
+            cell.store(value);
+        }
+        assert_eq!(*cell.load(), 100);
+        assert!(!cell.lock.locked.load(Ordering::Relaxed));
+        assert_eq!(cell.into_inner(), 100);
     }
 }
