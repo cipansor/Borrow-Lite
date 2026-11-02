@@ -95,6 +95,7 @@ def load_manifests(ref: str | None = None) -> tuple[dict[str, dict], dict[str, P
     tag can be validated against the version it was actually cut from.
     """
     root = tomllib.loads(_manifest_text(ROOT_MANIFEST, ref))
+    _resolve_inherited_version(root, root)
     manifests: dict[str, dict] = {root["package"]["name"]: root}
     dirs: dict[str, Path] = {root["package"]["name"]: ROOT}
 
@@ -102,26 +103,37 @@ def load_manifests(ref: str | None = None) -> tuple[dict[str, dict], dict[str, P
         relpath = f"{member}/Cargo.toml"
         try:
             parsed = tomllib.loads(_manifest_text(relpath, ref))
-        except ReleaseError:
-            raise ReleaseError(f"workspace member `{member}` has no Cargo.toml")
+        except (ReleaseError, FileNotFoundError) as error:
+            raise ReleaseError(
+                f"workspace member `{member}` has no Cargo.toml"
+            ) from error
         name = parsed["package"]["name"]
+        _resolve_inherited_version(parsed, root)
         manifests[name] = parsed
         dirs[name] = ROOT / member
     return manifests, dirs
 
 
+def _resolve_inherited_version(manifest: dict, root: dict) -> None:
+    """Write a concrete version where a manifest inherits `version.workspace`.
+
+    Resolved against `root` - the root manifest `load_manifests` read, from the
+    working tree or a given ref - rather than re-reading the working tree, so a
+    historical manifest resolves against its own root. A workspace version bump
+    would otherwise make every past tag disagree with the current root.
+    """
+    if not isinstance(manifest["package"]["version"], str):
+        manifest["package"]["version"] = root["workspace"]["package"]["version"]
+
+
 def version_of(manifest: dict) -> str:
     """The version a manifest declares.
 
-    Both crates state their own `version`. The `version.workspace = true` form is
-    resolved too, so a manifest that inherits a shared workspace version keeps
-    working.
+    `load_manifests` resolves `version.workspace = true` against the root it read
+    and writes the concrete string back, so this is a plain read: no filesystem
+    access, and a historical tag cannot pick up the current version by accident.
     """
-    field = manifest["package"]["version"]
-    if isinstance(field, str):
-        return field
-    workspace = tomllib.loads((ROOT / ROOT_MANIFEST).read_text())
-    return workspace["workspace"]["package"]["version"]
+    return manifest["package"]["version"]
 
 
 def check_tag(
