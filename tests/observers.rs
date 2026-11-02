@@ -1221,3 +1221,102 @@ mod unobserve_contract {
         value.clear_observers(); // break the `Rc` cycle the observer holds
     }
 }
+
+/// Removing an observer drops its closure, and with it everything the closure
+/// captured. Those destructors must run *after* the observer list is released:
+/// a captured value whose `Drop` reads or subscribes to the same `Observable`
+/// used to hit the list while it was still exclusively borrowed and panic -
+/// and inside the notification guard, which often runs while unwinding, that
+/// panic is an abort.
+mod observer_drop_reentrancy {
+    use borrow_lite::Observable;
+
+    /// A captured value whose destructor re-enters the `Observable` it was
+    /// subscribed to: it reads the observer list and subscribes a new observer.
+    /// It records what it saw, so a test can check the destructor really ran.
+    struct ReentersOnDrop {
+        source: Observable<i32>,
+        saw: Observable<Option<usize>>,
+    }
+
+    impl Drop for ReentersOnDrop {
+        fn drop(&mut self) {
+            let count = self.source.observer_count();
+            let _ = self.source.observe(|_| {});
+            self.saw.update(|s| *s = Some(count));
+        }
+    }
+
+    /// Subscribe an observer that owns a `ReentersOnDrop`, and return its id
+    /// plus the cell its destructor reports into.
+    fn subscribe(source: &Observable<i32>) -> (u64, Observable<Option<usize>>) {
+        let saw = Observable::new(None);
+        let token = ReentersOnDrop {
+            source: source.clone(),
+            saw: saw.clone(),
+        };
+        let id = source.observe(move |_| {
+            let _ = &token;
+        });
+        (id, saw)
+    }
+
+    #[test]
+    fn unobserve_drops_the_observer_after_releasing_the_list() {
+        let source = Observable::new(0i32);
+        let (id, saw) = subscribe(&source);
+
+        assert!(source.unobserve(id));
+        assert_eq!(saw.with(|s| *s), Some(0), "the destructor ran, unborrowed");
+        // The observer the destructor subscribed is a normal one.
+        assert_eq!(source.observer_count(), 1);
+        source.clear_observers();
+    }
+
+    #[test]
+    fn clear_observers_drops_the_observers_after_releasing_the_list() {
+        let source = Observable::new(0i32);
+        let (_, saw) = subscribe(&source);
+
+        source.clear_observers();
+        assert_eq!(saw.with(|s| *s), Some(0), "the destructor ran, unborrowed");
+        assert_eq!(source.observer_count(), 1);
+        source.clear_observers();
+    }
+
+    /// The queued-removal path: `unobserve` from inside a notification, applied
+    /// by the notification guard when the round ends.
+    #[test]
+    fn a_removal_queued_in_a_notification_drops_after_releasing_the_list() {
+        let source = Observable::new(0i32);
+        let (id, saw) = subscribe(&source);
+        let remover = source.clone();
+        let remover_id = source.observe(move |_| {
+            let _ = remover.unobserve(id);
+        });
+
+        source.notify();
+        // By the time the destructor ran, the guard had put the list back with
+        // the remover still in it.
+        assert_eq!(saw.with(|s| *s), Some(1), "the destructor ran, unborrowed");
+        assert!(source.unobserve(remover_id));
+        source.clear_observers();
+    }
+
+    /// The deferred-clear path: `clear_observers` from inside a notification,
+    /// applied by the notification guard when the round ends.
+    #[test]
+    fn a_clear_inside_a_notification_drops_after_releasing_the_list() {
+        let source = Observable::new(0i32);
+        let (_, saw) = subscribe(&source);
+        let clearer = source.clone();
+        source.observe(move |_| clearer.clear_observers());
+
+        source.notify();
+        assert_eq!(saw.with(|s| *s), Some(0), "the destructor ran, unborrowed");
+        // Only the observer the destructor subscribed survives the clear: it
+        // was added after the clear was requested.
+        assert_eq!(source.observer_count(), 1);
+        source.clear_observers();
+    }
+}
